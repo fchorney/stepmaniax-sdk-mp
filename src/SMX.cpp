@@ -290,6 +290,16 @@ public:
         return m_Connection.GetInputState();
     }
 
+    /// Fires the Connected callback for this device using the given slot index.
+    /// Called by the manager after device ordering is corrected.
+    void FireConnectedCallback(int pad) const
+    {
+        if(!m_pUpdateCallback)
+            return;
+        m_pUpdateCallback(pad, static_cast<SMXUpdateCallbackReason>(
+            SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated | SMXUpdateCallback_Connected));
+    }
+
     /// Updates the device state, called from the I/O thread each frame.
     /// Checks for input changes, processes received packets, and manages the
     /// connection lifecycle. Called with the manager's lock already held.
@@ -330,7 +340,7 @@ private:
 
     /// Processes received packets from the device, extracting configuration data.
     /// Reads packets from the connection and updates the cached config when a
-    /// complete config packet is received. Invokes the update callback on config change.
+    /// complete config packet is received.
     void HandlePackets()
     {
         string buf;
@@ -365,12 +375,9 @@ private:
                 memcpy(&m_Config, buf.data() + 2, min(static_cast<int>(iSize), static_cast<int>(sizeof(m_Config))));
             }
 
-            const bool bFirstConfig = !m_bHaveConfig;
             m_bHaveConfig = true;
-            SMXUpdateCallbackReason reason = static_cast<SMXUpdateCallbackReason>(
-                SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated |
-                (bFirstConfig ? SMXUpdateCallback_Connected : 0));
-            CallUpdateCallback(reason);
+            CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(
+                SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated));
         }
     }
 
@@ -521,6 +528,8 @@ private:
         {
             AttemptConnections();
 
+            bool bWasConnected[2] = {m_Devices[0].IsConnected(), m_Devices[1].IsConnected()};
+
             for(int i = 0; i < 2; i++)
             {
                 string sError;
@@ -532,7 +541,29 @@ private:
                 }
             }
 
-            CorrectDeviceOrder();
+            // Correct device ordering BEFORE firing Connected callbacks.
+            // This ensures SMX_GetInfo(pad) returns the correct device when
+            // the callback handler queries it.
+            const bool bSwapped = CorrectDeviceOrder();
+
+            // Detect which slots just transitioned to connected, accounting for swap.
+            bool bJustConnected[2] = {
+                !bWasConnected[0] && m_Devices[0].IsConnected(),
+                !bWasConnected[1] && m_Devices[1].IsConnected()
+            };
+            if(bSwapped)
+            {
+                // After a swap, slot i now holds what was in slot 1-i before.
+                // A device that "just connected" in the old slot is now in the new slot.
+                bJustConnected[0] = !bWasConnected[1] && m_Devices[0].IsConnected();
+                bJustConnected[1] = !bWasConnected[0] && m_Devices[1].IsConnected();
+            }
+
+            for(int i = 0; i < 2; i++)
+            {
+                if(bJustConnected[i])
+                    m_Devices[i].FireConnectedCallback(i);
+            }
 
             // Wait for Report 6 data from USB polling thread, or timeout.
             m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
@@ -589,7 +620,8 @@ private:
     ///
     /// This function is called each I/O thread iteration to maintain proper
     /// device ordering as devices are connected and disconnected.
-    void CorrectDeviceOrder()
+    /// @return true if devices were swapped.
+    bool CorrectDeviceOrder()
     {
         SMXInfo info[2];
         m_Devices[0].GetInfoLocked(info[0]);
@@ -597,7 +629,7 @@ private:
 
         if(info[0].m_bConnected && info[1].m_bConnected &&
            m_Devices[0].IsPlayer2Locked() == m_Devices[1].IsPlayer2Locked())
-            return;
+            return false;
 
         const bool bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
                      (info[1].m_bConnected && !m_Devices[1].IsPlayer2Locked());
@@ -607,6 +639,7 @@ private:
             m_Devices[0] = std::move(m_Devices[1]);
             m_Devices[1] = std::move(temp);
         }
+        return bSwap;
     }
 
     recursive_mutex m_Lock;
