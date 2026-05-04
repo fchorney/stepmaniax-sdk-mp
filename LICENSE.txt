@@ -1,5 +1,6 @@
 MIT License
 
+Copyright (c) 2017 Step Revolution LLC
 Copyright (c) 2026 Fernando Chorney
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
