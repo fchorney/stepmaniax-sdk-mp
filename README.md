@@ -336,12 +336,32 @@ Panel: ┌───┬───┬───┐
 │   ├── SMX.cpp                  # Helpers, device logic, manager, API implementation
 │   ├── SMXDeviceConnection.h    # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp  # HID I/O class (implementation)
+│   ├── SMXHIDInterface.h        # HID abstraction interfaces
+│   ├── SMXHIDInterface.cpp      # Real hidapi-backed implementation
 │   ├── SMXConfigPacket.h        # Internal config struct
 │   └── SMXConfigPacket.cpp      # Old firmware config format conversion
+├── tests/
+│   ├── test_main.cpp            # Basic API tests
+│   └── test_device_connection.cpp # Device connection tests with fake HID
 ├── sample/
 │   └── sample.cpp               # Sample application
 └── CMakeLists.txt               # Build configuration
 ```
+
+## HID abstraction layer
+
+All USB HID communication goes through two interfaces defined in `src/SMXHIDInterface.h`:
+
+- `IHIDDevice` — represents an open connection to a single device (Read, Write, Close)
+- `IHIDEnumerator` — handles device discovery and lifecycle (Init, Exit, Enumerate, Open)
+
+The real implementation in `SMXHIDInterface.cpp` wraps hidapi. This is the only file that includes `<hidapi/hidapi.h>` or calls hidapi functions directly.
+
+This abstraction exists for two reasons:
+
+1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
+
+2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
 
 ## Roadmap
 

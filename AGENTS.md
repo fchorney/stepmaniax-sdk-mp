@@ -14,7 +14,7 @@ This SDK uses a two-thread design (vs the original's single I/O thread):
 - **Main I/O thread** — runs at ~100ms intervals, handles device discovery, connection management, configuration, and command processing. Consumes Report 6 data from the USB polling thread.
 
 Key design decisions:
-- Uses **hidapi** directly instead of the original's platform-specific HID code.
+- Uses **hidapi** behind an abstraction layer (`IHIDDevice`/`IHIDEnumerator` interfaces in `SMXHIDInterface.h`). Only `SMXHIDInterface.cpp` touches hidapi directly, making the HID backend swappable and testable.
 - Core logic is consolidated into **SMX.cpp** (helpers, SMXDevice, SMXManager, public API) rather than spread across many files.
 - Only `SMX_*` public API symbols are exported; all internal symbols are hidden.
 - C++14 standard, no higher.
@@ -49,8 +49,13 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── SMX.cpp                      # Helpers, SMXDevice, SMXManager, API implementation
 │   ├── SMXDeviceConnection.h        # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp      # HID I/O class (implementation)
+│   ├── SMXHIDInterface.h            # HID abstraction interfaces
+│   ├── SMXHIDInterface.cpp          # Real hidapi-backed implementation
 │   ├── SMXConfigPacket.h            # Internal config struct
 │   └── SMXConfigPacket.cpp          # Old firmware config format conversion
+├── tests/
+│   ├── test_main.cpp                # Basic API tests
+│   └── test_device_connection.cpp   # Device connection tests with fake HID
 ├── sample/sample.cpp                # Sample application
 ├── original_sdk/                    # Original SDK (git submodule, reference only)
 └── CMakeLists.txt                   # Build configuration
@@ -65,15 +70,25 @@ New dependencies should not be added unless there is a compelling reason. The SD
 
 ## Testing
 
-There is currently no test framework. This is an open area for development.
+The project uses [doctest](https://github.com/doctest/doctest) for unit testing, fetched automatically via CMake's FetchContent.
 
-Testing is challenging because the SDK interacts with physical hardware. Potential approaches to explore:
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_TESTS=ON
+make
+ctest
+```
 
-- Mock/fake HID layer that simulates device responses for unit testing connection logic, packet parsing, and state management.
-- Record/replay of real HID traffic for regression testing.
-- Integration tests that require actual hardware (gated behind a flag or separate CI step).
+The HID abstraction layer (`IHIDDevice`/`IHIDEnumerator`) enables testing without physical hardware. Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic.
 
-Contributions toward a testing strategy are welcome.
+Areas for further test coverage:
+
+- Report 6 fragmentation and reassembly
+- Device info parsing and connection state machine
+- Command send/response flow and timeouts
+- Device discovery and player ordering in SMXManager
+- Record/replay of real HID traffic for regression testing
+- Integration tests that require actual hardware (gated behind a flag or separate CI step)
 
 ## Building
 
@@ -92,3 +107,4 @@ See README.md for platform-specific instructions and all build options.
 3. **Keep the public API minimal.** Only `SMX_*` functions are exported. Internal classes and helpers stay in the `SMX` namespace or anonymous namespaces.
 4. **Cross-platform.** All code must build and work on Linux, macOS (Intel + Apple Silicon), and Windows. Use standard C++14 and hidapi — no platform-specific code in the core logic.
 5. **Reference the original SDK.** When implementing new features, consult `original_sdk/` for protocol details and expected behavior, but don't copy its architecture decisions blindly.
+6. **Keep the README.md and AGENTS.md up to date.** When changing code, make sure to update the README.md and AGENTS.md if necessary.
