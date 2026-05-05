@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include "SMX.h"
+#include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 
 #include <chrono>
@@ -62,7 +63,7 @@ public:
         }
         // Check if this is an activation command ("G" or "g\n")
         // HID packet format: [report_id=5][flags][size][payload...]
-        if(len >= 4 && buf[0] == 5 && buf[2] >= 1)
+        if(len >= 4 && buf[0] == HID_REPORT_COMMAND && buf[2] >= 1)
         {
             char cmd = static_cast<char>(buf[3]);
             if(cmd == 'G' || cmd == 'g')
@@ -130,7 +131,7 @@ private:
 
 static vector<uint8_t> MakeDeviceInfoResponse(char player, uint16_t fwVersion)
 {
-    // Report 6 with DEVICE_INFO flag (0x80)
+    // Report 6 with DEVICE_INFO flag
     // Payload: data_info_packet = cmd(1) + packet_size(1) + player(1) + unused(1) + serial(16) + fw(2) + unused(1)
     vector<uint8_t> payload(23, 0);
     payload[0] = 'I';
@@ -142,8 +143,8 @@ static vector<uint8_t> MakeDeviceInfoResponse(char player, uint16_t fwVersion)
     memcpy(&payload[20], &fwVersion, 2);
 
     vector<uint8_t> pkt;
-    pkt.push_back(0x06);  // report ID
-    pkt.push_back(0x80);  // DEVICE_INFO flag
+    pkt.push_back(HID_REPORT_DATA);  // report ID
+    pkt.push_back(PACKET_FLAG_DEVICE_INFO);
     pkt.push_back(static_cast<uint8_t>(payload.size()));
     pkt.insert(pkt.end(), payload.begin(), payload.end());
     return pkt;
@@ -151,7 +152,7 @@ static vector<uint8_t> MakeDeviceInfoResponse(char player, uint16_t fwVersion)
 
 // --- Helper to build a config response (needed for "fully connected") ---
 // The device sends a 'G' config packet after activation.
-// Format: START|END|HOST_CMD_FINISHED (0x07), payload starts with 'G' + size + config data
+// Format: START|END|HOST_CMD_FINISHED, payload starts with 'G' + size + config data
 
 static vector<uint8_t> MakeConfigResponse()
 {
@@ -163,8 +164,8 @@ static vector<uint8_t> MakeConfigResponse()
     payload.resize(2 + 40, 0);  // zero-filled config
 
     vector<uint8_t> pkt;
-    pkt.push_back(0x06);
-    pkt.push_back(0x07);  // START|END|HOST_CMD_FINISHED
+    pkt.push_back(HID_REPORT_DATA);
+    pkt.push_back(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED);
     pkt.push_back(static_cast<uint8_t>(payload.size()));
     pkt.insert(pkt.end(), payload.begin(), payload.end());
     return pkt;
@@ -446,7 +447,7 @@ TEST_CASE("SMX_GetInputState returns panel state through full stack") {
     REQUIRE(bConnected);
 
     // Queue a Report 3 input state packet
-    pFakeDevice->QueueRead({0x03, 0x55, 0x01});  // state = 0x0155
+    pFakeDevice->QueueRead({HID_REPORT_INPUT_STATE, 0x55, 0x01});  // state = 0x0155
 
     bool bGotState = WaitFor([&]() {
         return SMX_GetInputState(0) == 0x0155;
@@ -497,7 +498,7 @@ TEST_CASE("SMX_SetSerialNumbers sends 's' command with 16-byte serial") {
     bool bFoundSerialCmd = false;
     for(const auto &w : writes)
     {
-        if(w.size() >= 4 && w[0] == 5)
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND)
         {
             uint8_t payloadSize = w[2];
             if(payloadSize >= 18 && w[3] == 's')  // 's' + 16 bytes serial + '\n'
@@ -603,8 +604,8 @@ TEST_CASE("Device with firmware < 5 uses 'g' (old config format) and converts") 
     oldConfigPayload.resize(2 + 40, 0);
 
     vector<uint8_t> oldConfigPkt;
-    oldConfigPkt.push_back(0x06);
-    oldConfigPkt.push_back(0x07);  // START|END|HOST_CMD_FINISHED
+    oldConfigPkt.push_back(HID_REPORT_DATA);
+    oldConfigPkt.push_back(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED);
     oldConfigPkt.push_back(static_cast<uint8_t>(oldConfigPayload.size()));
     oldConfigPkt.insert(oldConfigPkt.end(), oldConfigPayload.begin(), oldConfigPayload.end());
     pFakeDevice->SetConfigResponse(oldConfigPkt);

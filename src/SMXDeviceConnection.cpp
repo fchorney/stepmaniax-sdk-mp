@@ -15,12 +15,6 @@ namespace SMX {
 using namespace std;
 using namespace SMX;
 
-// USB report flags used in the SMX protocol for packet fragmentation and control.
-#define PACKET_FLAG_START_OF_COMMAND   0x04  // Indicates start of a multi-packet command
-#define PACKET_FLAG_END_OF_COMMAND     0x01  // Indicates end of a multi-packet command
-#define PACKET_FLAG_HOST_CMD_FINISHED  0x02  // Device has finished processing command
-#define PACKET_FLAG_DEVICE_INFO        0x80  // This packet contains device info response
-
 SMXDeviceConnection::SMXDeviceConnection() = default;
 
 SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
@@ -315,7 +309,7 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
     // Build device info request packet.
     // Report ID 5, flag 0x80 (DEVICE_INFO), payload size 0.
     string sPacket(64, '\0');
-    sPacket[0] = 5;  // report ID
+    sPacket[0] = HID_REPORT_COMMAND;  // report ID
     sPacket[1] = static_cast<char>(PACKET_FLAG_DEVICE_INFO);
     sPacket[2] = 0;
 
@@ -349,7 +343,7 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
             iFlags |= PACKET_FLAG_END_OF_COMMAND;
 
         string sPacket(64, '\0');
-        sPacket[0] = 5;  // report ID
+        sPacket[0] = HID_REPORT_COMMAND;  // report ID
         sPacket[1] = static_cast<char>(iFlags);
         sPacket[2] = static_cast<char>(iPacketSize);
         if(iPacketSize > 0)
@@ -398,7 +392,7 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
 
         const uint8_t iReportId = rawbuf[0];
 
-        if(iReportId == 3)
+        if(iReportId == HID_REPORT_INPUT_STATE)
         {
             // Input state report: 3 bytes (ID + 2 bytes little-endian state)
             if(res < 3)
@@ -411,7 +405,7 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
             if((bChanged || m_bAlwaysFireInputCallback.load(std::memory_order_relaxed)) && m_pInputStateChangedCallback)
                 m_pInputStateChangedCallback();
         }
-        else if(iReportId == 6)
+        else if(iReportId == HID_REPORT_DATA)
         {
             // Command/config report: variable length [ID][flags][size][payload...]
             if(res < 3)

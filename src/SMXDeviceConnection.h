@@ -10,6 +10,17 @@
 
 #include "SMXHIDInterface.h"
 
+// USB report flags used in the SMX protocol for packet fragmentation and control.
+#define PACKET_FLAG_START_OF_COMMAND   0x04  // Indicates start of a multi-packet command
+#define PACKET_FLAG_END_OF_COMMAND     0x01  // Indicates end of a multi-packet command
+#define PACKET_FLAG_HOST_CMD_FINISHED  0x02  // Device has finished processing command
+#define PACKET_FLAG_DEVICE_INFO        0x80  // This packet contains device info response
+
+// HID report IDs used in the SMX protocol.
+static constexpr uint8_t HID_REPORT_INPUT_STATE = 0x03;  // Input state (panel presses)
+static constexpr uint8_t HID_REPORT_COMMAND     = 0x05;  // Outgoing commands to device
+static constexpr uint8_t HID_REPORT_DATA        = 0x06;  // Incoming data/config from device
+
 namespace SMX {
 
 /// Immutable device information retrieved from the hardware on connection.

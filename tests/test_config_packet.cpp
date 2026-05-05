@@ -6,41 +6,6 @@
 
 using namespace std;
 
-// OldSMXConfig layout (mirrors the struct in SMXConfigPacket.cpp)
-// We build raw byte vectors to feed into ConvertToNewConfig.
-#pragma pack(push, 1)
-struct OldSMXConfig
-{
-    uint8_t unused1, unused2, unused3, unused4, unused5, unused6;
-    uint16_t masterDebounceMilliseconds;
-    uint8_t panelThreshold7Low, panelThreshold7High;
-    uint8_t panelThreshold4Low, panelThreshold4High;
-    uint8_t panelThreshold2Low, panelThreshold2High;
-    uint16_t panelDebounceMicroseconds;
-    uint16_t autoCalibrationPeriodMilliseconds;
-    uint8_t autoCalibrationMaxDeviation;
-    uint8_t badSensorMinimumDelaySeconds;
-    uint16_t autoCalibrationAveragesPerUpdate;
-    uint8_t unused7, unused8;
-    uint8_t panelThreshold1Low, panelThreshold1High;
-    uint8_t enabledSensors[5];
-    uint8_t autoLightsTimeout;
-    uint8_t stepColor[3*9];
-    uint8_t panelRotation;
-    uint16_t autoCalibrationSamplesPerAverage;
-    uint8_t masterVersion;
-    uint8_t configVersion;
-    uint8_t unused9[10];
-    uint8_t panelThreshold0Low, panelThreshold0High;
-    uint8_t panelThreshold3Low, panelThreshold3High;
-    uint8_t panelThreshold5Low, panelThreshold5High;
-    uint8_t panelThreshold6Low, panelThreshold6High;
-    uint8_t panelThreshold8Low, panelThreshold8High;
-    uint16_t debounceDelayMilliseconds;
-    uint8_t padding[164];
-};
-#pragma pack(pop)
-
 static vector<uint8_t> MakeOldConfig(const OldSMXConfig &cfg)
 {
     vector<uint8_t> raw(sizeof(OldSMXConfig));

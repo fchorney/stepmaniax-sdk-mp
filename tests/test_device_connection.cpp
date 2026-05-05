@@ -45,11 +45,11 @@ private:
 };
 
 // --- Helper: build a Report 6 packet for PollUSBData ---
-// Format: [report_id=6][flags][payload_size][payload...]
+// Format: [report_id][flags][payload_size][payload...]
 static vector<uint8_t> MakeReport6(uint8_t flags, const vector<uint8_t> &payload)
 {
     vector<uint8_t> pkt;
-    pkt.push_back(0x06);
+    pkt.push_back(HID_REPORT_DATA);
     pkt.push_back(flags);
     pkt.push_back(static_cast<uint8_t>(payload.size()));
     pkt.insert(pkt.end(), payload.begin(), payload.end());
@@ -85,7 +85,7 @@ static void CompleteDeviceInfoHandshake(SMXDeviceConnection &conn, FakeHIDDevice
     uint8_t serial[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
                           0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
     auto payload = MakeDeviceInfoPayload(player, fwVersion, serial);
-    pFake->QueueRead(MakeReport6(0x80, payload));  // DEVICE_INFO flag
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));  // DEVICE_INFO flag
     conn.PollUSBData(sError);
 
     // Second Update processes the device info response
@@ -103,7 +103,7 @@ TEST_CASE("Report 3 updates input state") {
     SMXDeviceConnection conn;
     conn.Open("/fake/path", std::move(pDevice));
 
-    pFake->QueueRead({0x03, 0x10, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x10, 0x00});
 
     string sError;
     conn.PollUSBData(sError);
@@ -119,7 +119,7 @@ TEST_CASE("Report 3 updates with multiple panels") {
     SMXDeviceConnection conn;
     conn.Open("/fake/path", std::move(pDevice));
 
-    pFake->QueueRead({0x03, 0x11, 0x01});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x11, 0x01});
 
     string sError;
     conn.PollUSBData(sError);
@@ -137,13 +137,13 @@ TEST_CASE("Report 3 fires input state callback on change") {
     int iCallbackCount = 0;
     conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
 
-    pFake->QueueRead({0x03, 0x01, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
     string sError;
     conn.PollUSBData(sError);
     CHECK(iCallbackCount == 1);
 
     // Same state again — should NOT fire
-    pFake->QueueRead({0x03, 0x01, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
     conn.PollUSBData(sError);
     CHECK(iCallbackCount == 1);
 }
@@ -159,8 +159,8 @@ TEST_CASE("Report 3 always-fire mode fires on duplicate state") {
     int iCallbackCount = 0;
     conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
 
-    pFake->QueueRead({0x03, 0x01, 0x00});
-    pFake->QueueRead({0x03, 0x01, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
 
     string sError;
     conn.PollUSBData(sError);
@@ -203,7 +203,7 @@ TEST_CASE("Close resets state") {
     SMXDeviceConnection conn;
     conn.Open("/fake/path", std::move(pDevice));
 
-    pFake->QueueRead({0x03, 0xFF, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0xFF, 0x00});
     string sError;
     conn.PollUSBData(sError);
     CHECK(conn.GetInputState() == 0x00FF);
@@ -224,8 +224,8 @@ TEST_CASE("Report 6 single packet with START|END is queued as complete packet") 
     CompleteDeviceInfoHandshake(conn, pFake);
     conn.SetActive(true);
 
-    // START|END = 0x05, payload = "AB"
-    pFake->QueueRead(MakeReport6(0x05, {'A', 'B'}));
+    // START|END flags, payload = "AB"
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND, {'A', 'B'}));
 
     string sError;
     conn.PollUSBData(sError);
@@ -244,12 +244,12 @@ TEST_CASE("Report 6 multi-fragment reassembly") {
     CompleteDeviceInfoHandshake(conn, pFake);
     conn.SetActive(true);
 
-    // Fragment 1: START (0x04)
-    pFake->QueueRead(MakeReport6(0x04, {'H', 'e', 'l'}));
-    // Fragment 2: middle (no flags = 0x00)
-    pFake->QueueRead(MakeReport6(0x00, {'l', 'o'}));
-    // Fragment 3: END (0x01)
-    pFake->QueueRead(MakeReport6(0x01, {' ', 'W'}));
+    // Fragment 1: START
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND, {'H', 'e', 'l'}));
+    // Fragment 2: middle (no flags)
+    pFake->QueueRead(MakeReport6(0, {'l', 'o'}));
+    // Fragment 3: END
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_END_OF_COMMAND, {' ', 'W'}));
 
     string sError;
     conn.PollUSBData(sError);
@@ -268,15 +268,15 @@ TEST_CASE("Report 6 START clears partial buffer") {
     conn.SetActive(true);
 
     // Partial fragment (no END)
-    pFake->QueueRead(MakeReport6(0x04, {'o', 'l', 'd'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND, {'o', 'l', 'd'}));
 
     string sError;
     conn.PollUSBData(sError);
     conn.Update(sError);
 
     // New START should clear the old partial data
-    pFake->QueueRead(MakeReport6(0x04, {'n', 'e', 'w'}));
-    pFake->QueueRead(MakeReport6(0x01, {'!'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND, {'n', 'e', 'w'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_END_OF_COMMAND, {'!'}));
 
     conn.PollUSBData(sError);
     conn.Update(sError);
@@ -293,7 +293,7 @@ TEST_CASE("Report 6 packets not queued when inactive") {
     CompleteDeviceInfoHandshake(conn, pFake);
     // NOT calling conn.SetActive(true)
 
-    pFake->QueueRead(MakeReport6(0x05, {'X'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND, {'X'}));
 
     string sError;
     conn.PollUSBData(sError);
@@ -375,14 +375,14 @@ TEST_CASE("Device info response without pending command is ignored") {
     // Complete the handshake normally
     uint8_t serial[16] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
-    pFake->QueueRead(MakeReport6(0x80, payload));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
     conn.PollUSBData(sError);
     conn.Update(sError);
     CHECK(conn.IsConnectedWithDeviceInfo());
 
     // Now send another device info response with no command in flight — should be ignored
     auto payload2 = MakeDeviceInfoPayload('1', 99, serial);
-    pFake->QueueRead(MakeReport6(0x80, payload2));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload2));
     conn.PollUSBData(sError);
     conn.Update(sError);
 
@@ -415,8 +415,8 @@ TEST_CASE("SendCommand writes fragmented HID packets") {
 
     // Last write should be our command packet
     const auto &cmdPkt = writes.back();
-    CHECK(cmdPkt[0] == 5);   // report ID
-    CHECK(cmdPkt[1] == 0x05); // START|END (short command fits in one packet)
+    CHECK(cmdPkt[0] == HID_REPORT_COMMAND);   // report ID
+    CHECK(cmdPkt[1] == (PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND)); // short command fits in one packet
     CHECK(cmdPkt[2] == 4);   // payload size = "test"
     CHECK(cmdPkt[3] == 't');
     CHECK(cmdPkt[4] == 'e');
@@ -438,7 +438,7 @@ TEST_CASE("SendCommand callback fires on HOST_CMD_FINISHED") {
     conn.Update(sError);  // sends the command
 
     // Device responds with HOST_CMD_FINISHED | START | END
-    pFake->QueueRead(MakeReport6(0x07, {'G', 0x05, 'c', 'f', 'g'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'G', 0x05, 'c', 'f', 'g'}));
     conn.PollUSBData(sError);
     conn.Update(sError);
 
@@ -465,7 +465,7 @@ TEST_CASE("Commands are serialized - second waits for first") {
     CHECK(pFake->GetWrites().size() == writesAfterFirst);
 
     // Complete command A
-    pFake->QueueRead(MakeReport6(0x07, {'a'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'a'}));
     conn.PollUSBData(sError);
     conn.Update(sError);
     CHECK(sResp1 == "a");
@@ -552,7 +552,7 @@ TEST_CASE("Write error invokes callback and reports error") {
 
     uint8_t serial[16] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
-    pFake->QueueRead(MakeReport6(0x80, payload));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
     conn.PollUSBData(sError);
     conn.Update(sError);
     REQUIRE(conn.IsConnectedWithDeviceInfo());
@@ -581,7 +581,7 @@ TEST_CASE("Unsolicited HOST_CMD_FINISHED does not crash") {
     conn.SetActive(true);
 
     // Send HOST_CMD_FINISHED with no command in flight
-    pFake->QueueRead(MakeReport6(0x07, {'Z', 'z'}));
+    pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'Z', 'z'}));
 
     string sError;
     conn.PollUSBData(sError);
@@ -609,9 +609,9 @@ TEST_CASE("Multiple Report 3 packets in single PollUSBData retains final state")
     conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
 
     // Queue multiple Report 3 packets
-    pFake->QueueRead({0x03, 0x01, 0x00});  // state = 0x0001
-    pFake->QueueRead({0x03, 0x03, 0x00});  // state = 0x0003
-    pFake->QueueRead({0x03, 0xFF, 0x01});  // state = 0x01FF
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // state = 0x0001
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x03, 0x00});  // state = 0x0003
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0xFF, 0x01});  // state = 0x01FF
 
     string sError;
     conn.PollUSBData(sError);
@@ -631,10 +631,10 @@ TEST_CASE("Multiple Report 3 with duplicates only fires on changes") {
     int iCallbackCount = 0;
     conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
 
-    pFake->QueueRead({0x03, 0x01, 0x00});  // state = 0x0001 (change)
-    pFake->QueueRead({0x03, 0x01, 0x00});  // same (no change)
-    pFake->QueueRead({0x03, 0x02, 0x00});  // state = 0x0002 (change)
-    pFake->QueueRead({0x03, 0x02, 0x00});  // same (no change)
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // state = 0x0001 (change)
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // same (no change)
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x02, 0x00});  // state = 0x0002 (change)
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x02, 0x00});  // same (no change)
 
     string sError;
     conn.PollUSBData(sError);
@@ -654,7 +654,7 @@ TEST_CASE("Move constructor transfers connection state") {
     CompleteDeviceInfoHandshake(conn, pFake, '1', 7);
 
     // Set some input state
-    pFake->QueueRead({0x03, 0x42, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x42, 0x00});
     string sError;
     conn.PollUSBData(sError);
 
@@ -680,7 +680,7 @@ TEST_CASE("Move assignment transfers connection state") {
     conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
     CompleteDeviceInfoHandshake(conn, pFake, '0', 3);
 
-    pFake->QueueRead({0x03, 0x10, 0x00});
+    pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x10, 0x00});
     string sError;
     conn.PollUSBData(sError);
 
