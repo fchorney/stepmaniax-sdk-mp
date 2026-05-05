@@ -161,6 +161,10 @@ public:
     /// @param cb Callback function with no parameters. Called immediately when input state changes.
     void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
 
+    /// Sets whether the input state callback fires on every Report 3 packet (true)
+    /// or only when the state actually changes (false, default).
+    void SetAlwaysFireInputCallback(bool b) { m_bAlwaysFireInputCallback.store(b, std::memory_order_relaxed); }
+
     /// Polls for available USB data, called by the USB polling thread.
     /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
     /// @param sError [out] Error message if a read fails.
@@ -197,6 +201,7 @@ private:
     std::string m_sCurrentReadBuffer;
 
     std::atomic<uint16_t> m_iInputState{0};
+    std::atomic<bool> m_bAlwaysFireInputCallback{false};
 
     std::string m_sReport6Buffer;
     std::mutex m_Report6BufferMutex;

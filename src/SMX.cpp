@@ -474,6 +474,12 @@ public:
         m_iUSBPollingSleepUs.store(iUSBPollingUs);
     }
 
+    void SetInputStateMode(bool bAlwaysFire)
+    {
+        for(auto & m_Device : m_Devices)
+            m_Device.GetConnection()->SetAlwaysFireInputCallback(bAlwaysFire);
+    }
+
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
@@ -745,6 +751,11 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
     if(iMainThreadMs > 100)
         Log(ssprintf("Warning: main thread sleep of %dms may delay device connections and cause missed serial numbers. Recommended: 50ms or below.", iMainThreadMs));
     if(g_pSMX) g_pSMX->SetPollingRate(iMainThreadMs, iUSBPollingUs);
+}
+
+SMX_API void SMX_SetInputStateMode(bool bAlwaysFire)
+{
+    if(g_pSMX) g_pSMX->SetInputStateMode(bAlwaysFire);
 }
 
 /// Returns the SDK version string.

@@ -137,6 +137,15 @@ SMX_API void SMX_SetSerialNumbers();
 ///                      Controls input state latency. Lower values = lower latency but more CPU.
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 
+/// Controls when the SMXUpdateCallback_InputState callback fires.
+/// By default (bAlwaysFire = false), the callback only fires when the input state
+/// actually changes. When set to true, the callback fires on every received Report 3
+/// packet, even if the state is unchanged from the previous packet.
+///
+/// @param bAlwaysFire If true, fire the input state callback on every Report 3 packet.
+///                    If false (default), only fire when the state changes.
+SMX_API void SMX_SetInputStateMode(bool bAlwaysFire);
+
 /// Returns the SDK version string.
 /// @return C-string containing the version (e.g., "0.1.0").
 SMX_API const char *SMX_Version();

@@ -218,6 +218,9 @@ void SMX_SetSerialNumbers();
 // Configure thread sleep intervals (main thread ms, USB polling thread us).
 void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 
+// Fire input state callback on every packet (true) or only on change (false, default).
+void SMX_SetInputStateMode(bool bAlwaysFire);
+
 // Get SDK version string.
 const char *SMX_Version();
 ```
@@ -231,7 +234,7 @@ The `SMXUpdateCallback` receives a `reason` bitmask indicating what triggered th
 | Flag | Value | Triggered when |
 |------|-------|----------------|
 | `SMXUpdateCallback_Updated` | `1 << 0` | Always set on every callback. Use as a catch-all. |
-| `SMXUpdateCallback_InputState` | `1 << 1` | Panel press/release state changed. Only fires when state actually changes, not on every received input packet. Call `SMX_GetInputState()` for the new state. |
+| `SMXUpdateCallback_InputState` | `1 << 1` | Panel press/release state changed. By default, only fires when state actually changes. Call `SMX_SetInputStateMode(true)` to fire on every received input packet instead. Call `SMX_GetInputState()` for the current state. |
 | `SMXUpdateCallback_Connected` | `1 << 2` | A pad has become fully connected (device info and config received). |
 | `SMXUpdateCallback_Disconnected` | `1 << 3` | A pad has been disconnected. |
 | `SMXUpdateCallback_ConfigUpdated` | `1 << 4` | Device configuration has been received or updated. |

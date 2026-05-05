@@ -414,12 +414,11 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
                 continue;
 
             const uint16_t newState = (rawbuf[2] << 8) | rawbuf[1];
-            if(m_iInputState.load(std::memory_order_relaxed) != newState)
-            {
+            const bool bChanged = m_iInputState.load(std::memory_order_relaxed) != newState;
+            if(bChanged)
                 m_iInputState.store(newState, std::memory_order_relaxed);
-                if(m_pInputStateChangedCallback)
-                    m_pInputStateChangedCallback();
-            }
+            if((bChanged || m_bAlwaysFireInputCallback.load(std::memory_order_relaxed)) && m_pInputStateChangedCallback)
+                m_pInputStateChangedCallback();
         }
         else if(iReportId == 6)
         {
