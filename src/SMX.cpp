@@ -667,6 +667,13 @@ shared_ptr<SMXManager> g_pSMX;
 /// Must be called once before using any other SDK functions.
 /// The background I/O thread will automatically discover connected devices and
 /// invoke the update callback when their state changes.
+///
+/// @warning The callback may be invoked from different background threads (the USB
+/// polling thread for input state changes, and the main I/O thread for connection
+/// and config events). Invocations are serialized internally so the callback will
+/// never be called from two threads simultaneously, but it will not necessarily be
+/// called from the application's main thread.
+///
 /// @param callback Function to be called asynchronously when devices are connected,
 ///                  disconnected, or their input state changes.
 /// @param pUser Application-defined pointer passed to all callbacks for context.
