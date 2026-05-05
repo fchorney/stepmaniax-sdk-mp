@@ -175,6 +175,25 @@ mingw32-make
 
 Only the public `SMX_*` API functions are exported from the shared library. All internal symbols are hidden.
 
+## Running tests
+
+The project uses [doctest](https://github.com/doctest/doctest) for unit testing. Tests are not built by default.
+
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_TESTS=ON
+make
+ctest
+```
+
+Or run the test binary directly for more detailed output:
+
+```bash
+./smx-tests
+```
+
+doctest is fetched automatically via CMake's FetchContent — no manual installation required.
+
 ## Running the sample
 
 After building, run the sample application:

@@ -81,3 +81,20 @@ if(BUILD_SAMPLE)
     add_executable(smx-sample sample/sample.cpp)
     target_link_libraries(smx-sample PRIVATE smx-mp)
 endif()
+
+# Tests
+option(BUILD_TESTS "Build tests" OFF)
+if(BUILD_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(
+        doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG v2.4.11
+    )
+    FetchContent_MakeAvailable(doctest)
+
+    enable_testing()
+    add_executable(smx-tests tests/test_main.cpp)
+    target_link_libraries(smx-tests PRIVATE smx-mp doctest_with_main)
+    add_test(NAME smx-tests COMMAND smx-tests)
+endif()
