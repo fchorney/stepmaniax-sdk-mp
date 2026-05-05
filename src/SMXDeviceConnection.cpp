@@ -28,7 +28,7 @@ SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
 /// Move constructor transfers the HID connection and all pending I/O state from another instance.
 /// The source object is left in a disconnected state (m_pDevice set to nullptr).
 SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
-    m_pDevice(other.m_pDevice),
+    m_pDevice(std::move(other.m_pDevice)),
     m_sPath(std::move(other.m_sPath)),
     m_bActive(other.m_bActive),
     m_bGotInfo(other.m_bGotInfo),
@@ -40,7 +40,6 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
     m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
-    other.m_pDevice = nullptr;
 }
 
 /// Move assignment operator transfers connection and state, properly closing existing connection.
@@ -50,7 +49,7 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
     if(this != &other)
     {
         Close();
-        m_pDevice = other.m_pDevice;
+        m_pDevice = std::move(other.m_pDevice);
         m_sPath = std::move(other.m_sPath);
         m_bActive = other.m_bActive;
         m_bGotInfo = other.m_bGotInfo;
@@ -61,25 +60,17 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
-        other.m_pDevice = nullptr;
     }
     return *this;
 }
 
-/// Opens a connection to the SMX device at the given HID path.
-/// Sets the device to non-blocking mode and automatically requests device information.
+/// Opens a connection to the SMX device using the provided HID device handle.
+/// Automatically requests device information.
 /// The device is considered fully connected once device info is received (see IsConnectedWithDeviceInfo).
-bool SMXDeviceConnection::Open(const string &sPath, string &sError)
+bool SMXDeviceConnection::Open(const string &sPath, unique_ptr<IHIDDevice> pDevice)
 {
-    m_pDevice = hid_open_path(sPath.c_str());
-    if(!m_pDevice)
-    {
-        sError = "Failed to open HID device: " + sPath;
-        return false;
-    }
-
+    m_pDevice = std::move(pDevice);
     m_sPath = sPath;
-    hid_set_nonblocking(m_pDevice, 1);
 
     // Request device info. The response is handled in HandleUsbPacket which
     // sets m_bGotInfo directly, so no callback capture of 'this' is needed.
@@ -106,8 +97,8 @@ void SMXDeviceConnection::Close()
             cmd->m_pComplete("");
     }
 
-    hid_close(m_pDevice);
-    m_pDevice = nullptr;
+    m_pDevice->Close();
+    m_pDevice.reset();
     m_sPath.clear();
     m_sReadBuffers.clear();
     m_sCurrentReadBuffer.clear();
@@ -295,7 +286,7 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     for(size_t offset = 0; offset < sData.size(); offset += 64)
     {
         const size_t len = min(static_cast<size_t>(64), sData.size() - offset);
-        const int res = hid_write(m_pDevice, reinterpret_cast<const unsigned char*>(sData.data()) + offset, len);
+        const int res = m_pDevice->Write(reinterpret_cast<const uint8_t*>(sData.data()) + offset, len);
         if(res < 0)
         {
             sError = "Error writing to device";
@@ -389,11 +380,11 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
     // The common case is a single 3-byte Report 3 (input state) packet per call.
     // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
     std::string report6Packets;
-    unsigned char rawbuf[64];
+    uint8_t rawbuf[64];
 
     while(true)
     {
-        const int res = hid_read(m_pDevice, rawbuf, 64);
+        const int res = m_pDevice->Read(rawbuf, 64);
         if(res < 0)
         {
             sError = "Error reading from device";

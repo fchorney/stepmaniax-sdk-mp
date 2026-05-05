@@ -22,10 +22,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include <hidapi/hidapi.h>
 
 #include "SMXConfigPacket.h"
 #include "SMXDeviceConnection.h"
+#include "SMXHIDInterface.h"
 
 using namespace std;
 
@@ -194,7 +194,7 @@ public:
         return IsConnectedLocked();
     }
 
-    bool OpenDevice(const string &sPath, string &sError) { return m_Connection.Open(sPath, sError); }
+    bool OpenDevice(const string &sPath, unique_ptr<IHIDDevice> pDevice) { return m_Connection.Open(sPath, std::move(pDevice)); }
 
     void SetConnectionCallbacks()
     {
@@ -415,8 +415,10 @@ public:
     /// Constructor initializes the manager and starts the background I/O thread.
     /// @param callback Function to be invoked when device state changes.
     explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
-        m_Callback(callback)
+        m_Callback(callback),
+        m_pEnumerator(CreateHIDAPIEnumerator())
     {
+        m_pEnumerator->Init();
         for(auto & m_Device : m_Devices)
         {
             m_Device.SetLock(&m_Lock);
@@ -440,6 +442,7 @@ public:
         {
             m_USBPollingThread.join();
         }
+        m_pEnumerator->Exit();
     }
 
     /// Retrieves a pointer to a device by pad index (0 or 1).
@@ -586,21 +589,19 @@ private:
         if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
             return;
 
-        // Enumerate SMX devices via hidapi.
-        hid_device_info *devs = hid_enumerate(0x2341, 0x8037);
-        for(const hid_device_info *cur = devs; cur; cur = cur->next)
+        // Enumerate SMX devices via the HID enumerator.
+        auto devs = m_pEnumerator->Enumerate(0x2341, 0x8037);
+        for(const auto &dev : devs)
         {
-            if(!cur->product_string || wcscmp(cur->product_string, L"StepManiaX") != 0)
+            if(dev.sProduct != L"StepManiaX")
                 continue;
-            if(!cur->path)
+            if(dev.sPath.empty())
                 continue;
-
-            string sPath = cur->path;
 
             // Skip if already open.
             bool bOpen = false;
             for(const auto & m_Device : m_Devices)
-                if(m_Device.GetDevicePath() == sPath) { bOpen = true; break; }
+                if(m_Device.GetDevicePath() == dev.sPath) { bOpen = true; break; }
             if(bOpen) continue;
 
             // Find an empty slot.
@@ -610,13 +611,15 @@ private:
 
             if(!pSlot) { Log("No available slots for device."); break; }
 
-            Log("Opening SMX device: " + sPath);
-            string sError;
-            pSlot->OpenDevice(sPath, sError);
-            if(!sError.empty())
-                Log("Error opening device: " + sError);
+            Log("Opening SMX device: " + dev.sPath);
+            auto pDevice = m_pEnumerator->Open(dev.sPath);
+            if(!pDevice)
+            {
+                Log("Error opening device: " + dev.sPath);
+                continue;
+            }
+            pSlot->OpenDevice(dev.sPath, std::move(pDevice));
         }
-        hid_free_enumeration(devs);
     }
 
     /// Ensures devices are in the correct order, swapping them if necessary.
@@ -657,6 +660,7 @@ private:
     atomic<int> m_iUSBPollingSleepUs{1000};
     SMXDevice m_Devices[2];
     function<void(int, SMXUpdateCallbackReason)> m_Callback;
+    unique_ptr<IHIDEnumerator> m_pEnumerator;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -686,7 +690,6 @@ shared_ptr<SMXManager> g_pSMX;
 SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 {
     if(g_pSMX) return;
-    hid_init();
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
@@ -700,7 +703,6 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 SMX_API void SMX_Stop()
 {
     g_pSMX.reset();
-    hid_exit();
 }
 
 /// Sets a custom callback function to receive diagnostic log messages.

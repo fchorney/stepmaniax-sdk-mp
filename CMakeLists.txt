@@ -47,6 +47,7 @@ option(BUILD_SAMPLE "Build the sample application" OFF)
 add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
+    src/SMXHIDInterface.cpp
     src/SMX.cpp
 )
 
@@ -94,7 +95,11 @@ if(BUILD_TESTS)
     FetchContent_MakeAvailable(doctest)
 
     enable_testing()
-    add_executable(smx-tests tests/test_main.cpp)
+    add_executable(smx-tests
+        tests/test_main.cpp
+        tests/test_device_connection.cpp
+    )
     target_link_libraries(smx-tests PRIVATE smx-mp doctest_with_main)
+    target_include_directories(smx-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME smx-tests COMMAND smx-tests)
 endif()

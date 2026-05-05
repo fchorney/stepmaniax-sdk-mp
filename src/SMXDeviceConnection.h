@@ -7,7 +7,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <hidapi/hidapi.h>
+
+#include "SMXHIDInterface.h"
 
 namespace SMX {
 
@@ -104,12 +105,12 @@ public:
     SMXDeviceConnection(SMXDeviceConnection &&other) noexcept;
     SMXDeviceConnection &operator=(SMXDeviceConnection &&other) noexcept;
 
-    /// Opens a HID connection to the device at the given path.
+    /// Opens a HID connection using the provided device handle.
     /// Automatically requests device info and enters a pending state until the info arrives.
-    /// @param sPath HID device path string.
-    /// @param sError [out] Error message if open fails.
-    /// @return True if the device was successfully opened, false otherwise.
-    bool Open(const std::string &sPath, std::string &sError);
+    /// @param sPath HID device path string (stored for identification).
+    /// @param pDevice Opened HID device to use for communication.
+    /// @return True if the device was successfully opened.
+    bool Open(const std::string &sPath, std::unique_ptr<IHIDDevice> pDevice);
 
     /// Closes the connection and cancels all pending commands.
     /// Invokes completion callbacks with empty strings to notify of cancellation.
@@ -192,7 +193,7 @@ private:
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 
-    hid_device *m_pDevice = nullptr;
+    std::unique_ptr<IHIDDevice> m_pDevice;
     std::string m_sPath;
     bool m_bActive = false;
     bool m_bGotInfo = false;
