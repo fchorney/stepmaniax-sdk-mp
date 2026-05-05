@@ -606,10 +606,10 @@ private:
             return;
 
         // Enumerate SMX devices via the HID enumerator.
-        auto devs = m_pEnumerator->Enumerate(0x2341, 0x8037);
+        auto devs = m_pEnumerator->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
         for(const auto &dev : devs)
         {
-            if(dev.sProduct != L"StepManiaX")
+            if(dev.sProduct != SMX_USB_PRODUCT_STRING)
                 continue;
             if(dev.sPath.empty())
                 continue;

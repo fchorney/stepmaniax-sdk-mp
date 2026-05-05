@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "SMX.h"
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 
@@ -58,14 +59,14 @@ static vector<uint8_t> MakeReport6(uint8_t flags, const vector<uint8_t> &payload
 
 // --- Helper: build a device info response packet ---
 // data_info_packet: cmd(1), packet_size(1), player(1), unused(1), serial(16), fw_version(2), unused(1)
-static vector<uint8_t> MakeDeviceInfoPayload(char player, uint16_t fwVersion, const uint8_t serial[16])
+static vector<uint8_t> MakeDeviceInfoPayload(char player, uint16_t fwVersion, const uint8_t serial[SERIAL_SIZE])
 {
     vector<uint8_t> payload(23, 0);
     payload[0] = 'I';  // cmd
     payload[1] = 23;   // packet_size
     payload[2] = static_cast<uint8_t>(player);
     payload[3] = 0;    // unused
-    memcpy(&payload[4], serial, 16);
+    memcpy(&payload[4], serial, SERIAL_SIZE);
     memcpy(&payload[20], &fwVersion, 2);
     payload[22] = 0;   // unused
     return payload;
@@ -82,7 +83,7 @@ static void CompleteDeviceInfoHandshake(SMXDeviceConnection &conn, FakeHIDDevice
     conn.Update(sError);
 
     // Build and feed device info response
-    uint8_t serial[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+    uint8_t serial[SERIAL_SIZE] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
                           0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
     auto payload = MakeDeviceInfoPayload(player, fwVersion, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));  // DEVICE_INFO flag
@@ -373,7 +374,7 @@ TEST_CASE("Device info response without pending command is ignored") {
     conn.Update(sError);
 
     // Complete the handshake normally
-    uint8_t serial[16] = {};
+    uint8_t serial[SERIAL_SIZE] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
     conn.PollUSBData(sError);
@@ -550,7 +551,7 @@ TEST_CASE("Write error invokes callback and reports error") {
     string sError;
     conn.Update(sError);  // sends device info request
 
-    uint8_t serial[16] = {};
+    uint8_t serial[SERIAL_SIZE] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
     conn.PollUSBData(sError);

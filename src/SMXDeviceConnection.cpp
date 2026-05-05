@@ -1,4 +1,5 @@
 #include "SMXDeviceConnection.h"
+#include "SMX.h"
 
 #include <algorithm>
 #include <cstring>
@@ -143,7 +144,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
     if(m_pCurrentCommand && m_pCurrentCommand->m_bSent)
     {
         const double fSecondsAgo = GetMonotonicTime() - m_pCurrentCommand->m_fSentAt;
-        if(fSecondsAgo > 2.0)
+        if(fSecondsAgo > COMMAND_TIMEOUT_SECONDS)
         {
             Log("Command timed out. Retrying...");
             m_pCurrentCommand->m_bSent = false;
@@ -202,7 +203,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
             uint8_t packet_size;
             char player;
             char unused2;
-            uint8_t serial[16];
+            uint8_t serial[SERIAL_SIZE];
             uint16_t firmware_version;
             char unused3;
         };
@@ -214,7 +215,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         m_DeviceInfo.m_bP2 = (packet->player == '1');
         m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
 
-        const string sHexSerial = BinaryToHex(packet->serial, 16);
+        const string sHexSerial = BinaryToHex(packet->serial, SERIAL_SIZE);
         memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
 
         Log(ssprintf("Received device info. Master version: %i, P%i",
@@ -275,11 +276,10 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     m_aPendingCommands.pop_front();
 
     // Send all HID packets for this command sequentially.
-    // Each packet is 64 bytes (report ID + 63 bytes payload).
     const string &sData = pCmd->sData;
-    for(size_t offset = 0; offset < sData.size(); offset += 64)
+    for(size_t offset = 0; offset < sData.size(); offset += HID_PACKET_SIZE)
     {
-        const size_t len = min(static_cast<size_t>(64), sData.size() - offset);
+        const size_t len = min(HID_PACKET_SIZE, sData.size() - offset);
         const int res = m_pDevice->Write(reinterpret_cast<const uint8_t*>(sData.data()) + offset, len);
         if(res < 0)
         {
@@ -307,8 +307,7 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
     pCmd->m_bIsDeviceInfoCommand = true;
 
     // Build device info request packet.
-    // Report ID 5, flag 0x80 (DEVICE_INFO), payload size 0.
-    string sPacket(64, '\0');
+    string sPacket(HID_PACKET_SIZE, '\0');
     sPacket[0] = HID_REPORT_COMMAND;  // report ID
     sPacket[1] = static_cast<char>(PACKET_FLAG_DEVICE_INFO);
     sPacket[2] = 0;
@@ -335,14 +334,14 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     string allPackets;
     int i = 0;
     do {
-        const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), 61);
+        const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), static_cast<int>(HID_MAX_PAYLOAD_SIZE));
         uint8_t iFlags = 0;
         if(i == 0)
             iFlags |= PACKET_FLAG_START_OF_COMMAND;
         if(i + iPacketSize == static_cast<int>(cmd.size()))
             iFlags |= PACKET_FLAG_END_OF_COMMAND;
 
-        string sPacket(64, '\0');
+        string sPacket(HID_PACKET_SIZE, '\0');
         sPacket[0] = HID_REPORT_COMMAND;  // report ID
         sPacket[1] = static_cast<char>(iFlags);
         sPacket[2] = static_cast<char>(iPacketSize);
@@ -374,11 +373,11 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
     // The common case is a single 3-byte Report 3 (input state) packet per call.
     // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
     std::string report6Packets;
-    uint8_t rawbuf[64];
+    uint8_t rawbuf[HID_PACKET_SIZE];
 
     while(true)
     {
-        const int res = m_pDevice->Read(rawbuf, 64);
+        const int res = m_pDevice->Read(rawbuf, HID_PACKET_SIZE);
         if(res < 0)
         {
             sError = "Error reading from device";

@@ -191,7 +191,7 @@ public:
         {
             HIDDeviceInfo info;
             info.sPath = d.sPath;
-            info.sProduct = L"StepManiaX";
+            info.sProduct = SMX_USB_PRODUCT_STRING;
             results.push_back(info);
         }
         return results;

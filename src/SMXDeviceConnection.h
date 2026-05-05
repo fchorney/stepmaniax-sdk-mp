@@ -21,6 +21,18 @@ static constexpr uint8_t HID_REPORT_INPUT_STATE = 0x03;  // Input state (panel p
 static constexpr uint8_t HID_REPORT_COMMAND     = 0x05;  // Outgoing commands to device
 static constexpr uint8_t HID_REPORT_DATA        = 0x06;  // Incoming data/config from device
 
+// HID packet sizing.
+static constexpr size_t HID_PACKET_SIZE      = 64;  // Total HID packet size in bytes
+static constexpr size_t HID_MAX_PAYLOAD_SIZE = 61;  // Max payload per packet (64 - 3 byte header)
+
+// Command timeout.
+static constexpr double COMMAND_TIMEOUT_SECONDS = 2.0;  // Seconds before retrying a command
+
+// USB device identification.
+static constexpr uint16_t SMX_USB_VENDOR_ID  = 0x2341;
+static constexpr uint16_t SMX_USB_PRODUCT_ID = 0x8037;
+#define SMX_USB_PRODUCT_STRING L"StepManiaX"
+
 namespace SMX {
 
 /// Immutable device information retrieved from the hardware on connection.
