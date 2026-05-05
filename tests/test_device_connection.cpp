@@ -524,10 +524,19 @@ TEST_CASE("Write error invokes callback and reports error") {
     class FailWriteDevice : public IHIDDevice {
     public:
         int m_iWriteCount = 0;
-        int Read(uint8_t *, size_t) override { return 0; }
+        queue<vector<uint8_t>> m_aReads;
+        void QueueRead(vector<uint8_t> pkt) { m_aReads.push(std::move(pkt)); }
+        int Read(uint8_t *buf, size_t len) override {
+            if(m_aReads.empty()) return 0;
+            auto &pkt = m_aReads.front();
+            size_t n = min(len, pkt.size());
+            memcpy(buf, pkt.data(), n);
+            m_aReads.pop();
+            return static_cast<int>(n);
+        }
         int Write(const uint8_t *, size_t) override {
             m_iWriteCount++;
-            // Fail on second write (first is device info request)
+            // Succeed for device info request, fail for subsequent commands
             return m_iWriteCount > 1 ? -1 : 64;
         }
         void Close() override {}
@@ -537,17 +546,155 @@ TEST_CASE("Write error invokes callback and reports error") {
     SMXDeviceConnection conn;
     conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
 
-    // Manually complete handshake without using the helper (since writes fail)
-    // Skip — just test that a write error is reported
+    // Complete device info handshake (first write succeeds)
     string sError;
-    conn.Update(sError);  // sends device info request (succeeds)
+    conn.Update(sError);  // sends device info request
+
+    uint8_t serial[16] = {};
+    auto payload = MakeDeviceInfoPayload('0', 5, serial);
+    pFake->QueueRead(MakeReport6(0x80, payload));
+    conn.PollUSBData(sError);
+    conn.Update(sError);
+    REQUIRE(conn.IsConnectedWithDeviceInfo());
+
+    conn.SetActive(true);
 
     string sResp = "not_called";
     conn.SendCommand("X", [&](string r) { sResp = r; });
 
-    // Need to clear the current command (device info) first
-    // Since we can't easily complete the handshake with this device, just verify
-    // that the write failure path works by checking the error propagation
-    // after the device info command times out or completes.
-    // This is a structural limitation — skip this edge case for now.
+    sError.clear();
+    conn.Update(sError);  // tries to write command, fails
+
+    CHECK_FALSE(sError.empty());
+    CHECK(sResp.empty());  // callback invoked with empty string on error
+}
+
+// =========================================================================
+// Unsolicited HOST_CMD_FINISHED (no command in flight)
+// =========================================================================
+
+TEST_CASE("Unsolicited HOST_CMD_FINISHED does not crash") {
+    auto pFake = new FakeHIDDevice();
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
+    CompleteDeviceInfoHandshake(conn, pFake);
+    conn.SetActive(true);
+
+    // Send HOST_CMD_FINISHED with no command in flight
+    pFake->QueueRead(MakeReport6(0x07, {'Z', 'z'}));
+
+    string sError;
+    conn.PollUSBData(sError);
+    conn.Update(sError);
+
+    CHECK(sError.empty());
+    // The packet should still be queued as a read buffer (END flag set)
+    string out;
+    CHECK(conn.ReadPacket(out));
+    CHECK(out == "Zz");
+}
+
+// =========================================================================
+// Multiple Report 3 packets in single PollUSBData call
+// =========================================================================
+
+TEST_CASE("Multiple Report 3 packets in single PollUSBData retains final state") {
+    auto pFake = new FakeHIDDevice();
+    unique_ptr<IHIDDevice> pDevice(pFake);
+
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", std::move(pDevice));
+
+    int iCallbackCount = 0;
+    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
+
+    // Queue multiple Report 3 packets
+    pFake->QueueRead({0x03, 0x01, 0x00});  // state = 0x0001
+    pFake->QueueRead({0x03, 0x03, 0x00});  // state = 0x0003
+    pFake->QueueRead({0x03, 0xFF, 0x01});  // state = 0x01FF
+
+    string sError;
+    conn.PollUSBData(sError);
+
+    CHECK(sError.empty());
+    CHECK(conn.GetInputState() == 0x01FF);
+    CHECK(iCallbackCount == 3);  // each change fires callback
+}
+
+TEST_CASE("Multiple Report 3 with duplicates only fires on changes") {
+    auto pFake = new FakeHIDDevice();
+    unique_ptr<IHIDDevice> pDevice(pFake);
+
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", std::move(pDevice));
+
+    int iCallbackCount = 0;
+    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
+
+    pFake->QueueRead({0x03, 0x01, 0x00});  // state = 0x0001 (change)
+    pFake->QueueRead({0x03, 0x01, 0x00});  // same (no change)
+    pFake->QueueRead({0x03, 0x02, 0x00});  // state = 0x0002 (change)
+    pFake->QueueRead({0x03, 0x02, 0x00});  // same (no change)
+
+    string sError;
+    conn.PollUSBData(sError);
+
+    CHECK(conn.GetInputState() == 0x0002);
+    CHECK(iCallbackCount == 2);
+}
+
+// =========================================================================
+// Move semantics
+// =========================================================================
+
+TEST_CASE("Move constructor transfers connection state") {
+    auto pFake = new FakeHIDDevice();
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
+    CompleteDeviceInfoHandshake(conn, pFake, '1', 7);
+
+    // Set some input state
+    pFake->QueueRead({0x03, 0x42, 0x00});
+    string sError;
+    conn.PollUSBData(sError);
+
+    // Move construct
+    SMXDeviceConnection moved(std::move(conn));
+
+    CHECK(moved.IsConnected());
+    CHECK(moved.IsConnectedWithDeviceInfo());
+    CHECK(moved.GetInputState() == 0x0042);
+    CHECK(moved.GetPath() == "/fake/path");
+
+    SMXDeviceInfo info = moved.GetDeviceInfo();
+    CHECK(info.m_bP2 == true);
+    CHECK(info.m_iFirmwareVersion == 7);
+
+    // Original should be empty
+    CHECK_FALSE(conn.IsConnected());
+}
+
+TEST_CASE("Move assignment transfers connection state") {
+    auto pFake = new FakeHIDDevice();
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
+    CompleteDeviceInfoHandshake(conn, pFake, '0', 3);
+
+    pFake->QueueRead({0x03, 0x10, 0x00});
+    string sError;
+    conn.PollUSBData(sError);
+
+    SMXDeviceConnection moved;
+    moved = std::move(conn);
+
+    CHECK(moved.IsConnected());
+    CHECK(moved.IsConnectedWithDeviceInfo());
+    CHECK(moved.GetInputState() == 0x0010);
+    CHECK(moved.GetPath() == "/fake/path");
+
+    SMXDeviceInfo info = moved.GetDeviceInfo();
+    CHECK_FALSE(info.m_bP2);
+    CHECK(info.m_iFirmwareVersion == 3);
+
+    CHECK_FALSE(conn.IsConnected());
 }

@@ -56,7 +56,9 @@ New dependencies should not be added unless there is a compelling reason. The SD
 ├── tests/
 │   ├── test_main.cpp                # Basic API tests
 │   ├── test_device_connection.cpp   # Device connection tests with fake HID
-│   └── test_smx_manager.cpp     # Manager discovery and ordering tests
+│   ├── test_smx_manager.cpp         # Manager discovery and ordering tests
+│   ├── test_config_packet.cpp       # Config format conversion tests
+│   └── test_helpers.cpp             # Utility function tests
 ├── sample/sample.cpp                # Sample application
 ├── original_sdk/                    # Original SDK (git submodule, reference only)
 └── CMakeLists.txt                   # Build configuration
@@ -84,10 +86,6 @@ The HID abstraction layer (`IHIDDevice`/`IHIDEnumerator`) enables testing withou
 
 Areas for further test coverage:
 
-- Report 6 fragmentation and reassembly
-- Device info parsing and connection state machine
-- Command send/response flow and timeouts
-- Device discovery and player ordering in SMXManager
 - Record/replay of real HID traffic for regression testing
 - Integration tests that require actual hardware (gated behind a flag or separate CI step)
 

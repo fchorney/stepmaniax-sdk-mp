@@ -343,7 +343,9 @@ Panel: ┌───┬───┬───┐
 ├── tests/
 │   ├── test_main.cpp            # Basic API tests
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
-│   └── test_smx_manager.cpp     # Manager discovery and ordering tests
+│   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
+│   ├── test_config_packet.cpp   # Config format conversion tests
+│   └── test_helpers.cpp         # Utility function tests
 ├── sample/
 │   └── sample.cpp               # Sample application
 └── CMakeLists.txt               # Build configuration
