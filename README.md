@@ -27,6 +27,16 @@ Both thread sleep intervals are configurable via `SMX_SetPollingRate(int mainThr
 - **C++14** compiler
 - **[hidapi](https://github.com/libusb/hidapi)** — lightweight HID library
 
+## Original SDK source
+
+The original StepManiaX SDK is included as a git submodule at `original_sdk/` for reference and comparison during development. To initialize it:
+
+```bash
+git submodule update --init
+```
+
+This is optional and not required to build the project.
+
 ## Building
 
 ### Linux (Debian/Ubuntu)
