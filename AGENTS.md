@@ -55,7 +55,8 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   └── SMXConfigPacket.cpp          # Old firmware config format conversion
 ├── tests/
 │   ├── test_main.cpp                # Basic API tests
-│   └── test_device_connection.cpp   # Device connection tests with fake HID
+│   ├── test_device_connection.cpp   # Device connection tests with fake HID
+│   └── test_smx_manager.cpp     # Manager discovery and ordering tests
 ├── sample/sample.cpp                # Sample application
 ├── original_sdk/                    # Original SDK (git submodule, reference only)
 └── CMakeLists.txt                   # Build configuration

@@ -429,6 +429,22 @@ public:
         m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
     }
 
+    /// Constructor that accepts a custom enumerator (for testing).
+    SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback, unique_ptr<IHIDEnumerator> pEnumerator):
+        m_Callback(callback),
+        m_pEnumerator(std::move(pEnumerator))
+    {
+        m_pEnumerator->Init();
+        for(auto & m_Device : m_Devices)
+        {
+            m_Device.SetLock(&m_Lock);
+            m_Device.SetUpdateCallback(callback);
+            m_Device.SetConnectionCallbacks();
+        }
+        m_Thread = thread([this] { ThreadMain(); });
+        m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
+    }
+
     /// Destructor signals the I/O thread to stop and waits for it to finish.
     ~SMXManager()
     {
@@ -773,5 +789,21 @@ SMX_API const char *SMX_Version()
 SMX_API double SMX_GetMonotonicTime()
 {
     return GetMonotonicTime();
+}
+
+// ---------------------------------------------------------------------------
+// Test-only API (not exported from shared library, linked directly in tests)
+// ---------------------------------------------------------------------------
+
+/// Starts the SDK with a custom HID enumerator for testing.
+/// This allows tests to inject fake devices without real hardware.
+void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser, std::unique_ptr<SMX::IHIDEnumerator> pEnumerator)
+{
+    if(g_pSMX) return;
+
+    auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
+        callback(pad, reason, pUser);
+    };
+    g_pSMX = make_shared<SMXManager>(cb, std::move(pEnumerator));
 }
 

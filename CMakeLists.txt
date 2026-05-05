@@ -90,16 +90,31 @@ if(BUILD_TESTS)
     FetchContent_Declare(
         doctest
         GIT_REPOSITORY https://github.com/doctest/doctest.git
-        GIT_TAG v2.4.11
+        GIT_TAG v2.5.2
     )
     FetchContent_MakeAvailable(doctest)
 
     enable_testing()
+    # Tests need access to internal symbols (SMXDeviceConnection, SMX_StartWithEnumerator)
+    # that are hidden in the shared library, so compile sources directly into the test binary.
     add_executable(smx-tests
         tests/test_main.cpp
         tests/test_device_connection.cpp
+        tests/test_smx_manager.cpp
+        src/SMXConfigPacket.cpp
+        src/SMXDeviceConnection.cpp
+        src/SMXHIDInterface.cpp
+        src/SMX.cpp
     )
-    target_link_libraries(smx-tests PRIVATE smx-mp doctest_with_main)
-    target_include_directories(smx-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(smx-tests PRIVATE SMX_EXPORTS)
+    target_include_directories(smx-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${HIDAPI_INCLUDE_DIRS}
+    )
+    target_link_libraries(smx-tests PRIVATE doctest_with_main ${HIDAPI_LIBRARIES} Threads::Threads)
+    if(HIDAPI_LIBRARY_DIRS)
+        target_link_directories(smx-tests PRIVATE ${HIDAPI_LIBRARY_DIRS})
+    endif()
     add_test(NAME smx-tests COMMAND smx-tests)
 endif()
