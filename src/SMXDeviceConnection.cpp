@@ -30,10 +30,12 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_sReadBuffers(std::move(other.m_sReadBuffers)),
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
     m_iInputState(other.m_iInputState.load()),
+    m_bAlwaysFireInputCallback(other.m_bAlwaysFireInputCallback.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
-    m_pCurrentCommand(std::move(other.m_pCurrentCommand))
+    m_pCurrentCommand(std::move(other.m_pCurrentCommand)),
+    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback))
 {
 }
 
@@ -51,10 +53,12 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_sReadBuffers = std::move(other.m_sReadBuffers);
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
         m_iInputState.store(other.m_iInputState.load());
+        m_bAlwaysFireInputCallback.store(other.m_bAlwaysFireInputCallback.load());
         m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
+        m_pInputStateChangedCallback = std::move(other.m_pInputStateChangedCallback);
     }
     return *this;
 }

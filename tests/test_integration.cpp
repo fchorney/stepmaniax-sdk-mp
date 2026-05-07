@@ -98,6 +98,10 @@ TEST_CASE("Real hardware: device discovery and connection")
     REQUIRE(WaitFor([&]() { return iConnectedCallbacks.load() >= iExpected; }, 5000));
 
     // Check all connected pads
+    // Brief delay to allow USB polling thread to receive fresh input state
+    // after device ordering is finalized.
+    this_thread::sleep_for(chrono::milliseconds(200));
+
     int iConnectedCount = 0;
     for(int i = 0; i < 2; i++)
     {
