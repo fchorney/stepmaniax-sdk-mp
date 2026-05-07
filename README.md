@@ -21,6 +21,15 @@ This SDK uses a two-thread design that differs from the original StepManiaX SDK.
 
 Both thread sleep intervals are configurable via `SMX_SetPollingRate(int mainThreadMs, int usbPollingUs)`. The USB polling thread defaults to 1000µs between cycles; the main thread defaults to 100ms.
 
+### Device report rate
+
+The USB polling thread reads as fast as the device sends data, but the actual input report rate is determined by the pad's firmware — not the SDK's polling interval. Based on observation (the pad firmware is not open source):
+
+- **Idle:** ~10 Report 3 packets/sec (likely a periodic heartbeat)
+- **Active input:** ~50 packets/sec during panel presses (one report per state transition)
+
+This suggests the pad only sends input reports when the panel state changes or on a low-frequency heartbeat, rather than continuously streaming at the USB endpoint's maximum rate. The SDK's polling interval only needs to be fast enough to not miss packets between reads — it does not control how often the device sends them.
+
 ## Dependencies
 
 - **CMake** 3.14+

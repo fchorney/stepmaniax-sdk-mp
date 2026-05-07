@@ -84,42 +84,40 @@ TEST_CASE("Real hardware: device discovery and connection")
     }
 
     // Start SDK with the enumerator
-    bool bConnected = false;
-    bool bGotInput = false;
+    atomic<int> iConnectedCallbacks{0};
 
     SMX_StartWithEnumerator(
         [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
         },
-        &bConnected, std::move(pEnumerator));
+        &iConnectedCallbacks, std::move(pEnumerator));
 
-    // Wait for connection
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    // Wait for all detected devices to connect
+    int iExpected = static_cast<int>(devices.size());
+    REQUIRE(WaitFor([&]() { return iConnectedCallbacks.load() >= iExpected; }, 5000));
 
-    // Find which slot has the connected device (P2 solo goes to slot 1)
-    int iPad = -1;
+    // Check all connected pads
+    int iConnectedCount = 0;
     for(int i = 0; i < 2; i++)
     {
-        SMXInfo tmp;
-        SMX_GetInfo(i, &tmp);
-        if(tmp.m_bConnected) { iPad = i; break; }
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(!info.m_bConnected)
+            continue;
+
+        iConnectedCount++;
+        CHECK(info.m_iFirmwareVersion > 0);
+        MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
+                " p2=", info.m_bIsPlayer2,
+                " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
+
+        uint16_t iState = SMX_GetInputState(i);
+        char sHex[8];
+        snprintf(sHex, sizeof(sHex), "%04x", iState);
+        MESSAGE("Slot ", i, " input state: 0x", sHex);
     }
-    REQUIRE(iPad >= 0);
-
-    SMXInfo info;
-    SMX_GetInfo(iPad, &info);
-    CHECK(info.m_bConnected);
-    CHECK(info.m_iFirmwareVersion > 0);
-    MESSAGE("Connected on slot ", iPad, ": fw=", info.m_iFirmwareVersion,
-            " p2=", info.m_bIsPlayer2,
-            " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-
-    // Read input state (just verify it doesn't crash)
-    uint16_t iState = SMX_GetInputState(iPad);
-    char sHex[8];
-    snprintf(sHex, sizeof(sHex), "%04x", iState);
-    MESSAGE("Input state: 0x", sHex);
+    CHECK(iConnectedCount == static_cast<int>(devices.size()));
 
     // Let it run briefly to capture some traffic
     this_thread::sleep_for(chrono::milliseconds(500));
@@ -141,15 +139,17 @@ TEST_CASE("Real hardware: input state reads")
     }
 
     struct CallbackData {
-        atomic<bool> bConnected{false};
+        atomic<int> iConnected{0};
         atomic<int> iPacketCount{0};
     } data;
+
+    int iExpected = static_cast<int>(devices.size());
 
     SMX_Start(
         [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
             auto *d = static_cast<CallbackData *>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                d->bConnected = true;
+                d->iConnected.fetch_add(1);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_InputState))
                 d->iPacketCount.fetch_add(1, memory_order_relaxed);
         },
@@ -157,15 +157,20 @@ TEST_CASE("Real hardware: input state reads")
 
     SMX_SetInputStateMode(true);  // fire on every packet
 
-    REQUIRE(WaitFor([&]() { return data.bConnected.load(); }, 5000));
+    REQUIRE(WaitFor([&]() { return data.iConnected.load() >= iExpected; }, 5000));
 
-    // Measure USB input packet rate for 1 second at default polling rate (1000us)
+    MESSAGE("Connected ", data.iConnected.load(), " pad(s)");
+
+    // Measure USB input packet rate for 1 second at default polling rate (1000us).
+    // Observed behavior: the device sends ~10 Report 3 packets/sec at idle (likely a
+    // heartbeat) and ~50/sec during active panel input (one per state transition).
+    // The rate is determined by the device firmware, not the SDK polling interval.
     data.iPacketCount = 0;
     this_thread::sleep_for(chrono::seconds(1));
     int iPacketsDefault = data.iPacketCount.load();
 
     MESSAGE("Default (1000us): ", iPacketsDefault, " input packets/sec");
-    CHECK(iPacketsDefault > 0);
+    CHECK(iPacketsDefault >= 10);
 
     // Measure again at 500us polling rate
     SMX_SetPollingRate(50, 500);
@@ -174,7 +179,7 @@ TEST_CASE("Real hardware: input state reads")
     int iPacketsFast = data.iPacketCount.load();
 
     MESSAGE("Fast (500us): ", iPacketsFast, " input packets/sec");
-    CHECK(iPacketsFast > 0);
+    CHECK(iPacketsFast >= 10);
 
     SMX_Stop();
 }
