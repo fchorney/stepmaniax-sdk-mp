@@ -11,7 +11,7 @@ The goal is to eventually implement all features from the original SDK, but with
 This SDK uses a two-thread design (vs the original's single I/O thread):
 
 - **USB polling thread** — runs at ~1ms intervals, reads HID data from both pads. Report 3 (input state) is parsed inline and updates an atomic variable immediately. Report 6 packets are buffered for the main thread.
-- **Main I/O thread** — runs at ~100ms intervals, handles device discovery, connection management, configuration, and command processing. Consumes Report 6 data from the USB polling thread.
+- **Main I/O thread** — runs at ~50ms intervals, handles device discovery, connection management, configuration, and command processing. Consumes Report 6 data from the USB polling thread.
 
 Key design decisions:
 - Uses **hidapi** behind an abstraction layer (`IHIDDevice`/`IHIDEnumerator` interfaces in `SMXHIDInterface.h`). Only `SMXHIDInterface.cpp` touches hidapi directly, making the HID backend swappable and testable.
