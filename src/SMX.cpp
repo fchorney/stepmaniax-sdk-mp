@@ -29,7 +29,7 @@
 
 using namespace std;
 
-#define SMX_VERSION "0.1.0"
+#include "SMXVersion.h"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -778,7 +778,7 @@ SMX_API void SMX_SetInputStateMode(bool bAlwaysFire)
 }
 
 /// Returns the SDK version string.
-/// @return C-string containing the version (e.g., "0.1.0").
+/// @return C-string containing the version (e.g., "0.1.1").
 SMX_API const char *SMX_Version()
 {
     return SMX_VERSION;

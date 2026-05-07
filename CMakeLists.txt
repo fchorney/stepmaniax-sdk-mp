@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.14)
-project(smx-sdk-mp VERSION 0.1.0 LANGUAGES CXX)
+project(smx-sdk-mp VERSION 0.1.1 LANGUAGES CXX)
+
+# Generate version header from project version
+configure_file(src/SMXVersion.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/SMXVersion.h)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,7 +56,7 @@ add_library(smx-mp
 
 target_include_directories(smx-mp
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${HIDAPI_INCLUDE_DIRS}
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(smx-mp PUBLIC ${HIDAPI_LIBRARIES})
 if(HIDAPI_LIBRARY_DIRS)
@@ -122,6 +125,7 @@ if(BUILD_TESTS)
     target_include_directories(smx-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${HIDAPI_INCLUDE_DIRS}
     )
     target_link_libraries(smx-tests PRIVATE doctest_with_main ${HIDAPI_LIBRARIES} Threads::Threads)
@@ -147,6 +151,7 @@ if(BUILD_INTEGRATION_TESTS)
     target_include_directories(smx-integration-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${HIDAPI_INCLUDE_DIRS}
     )
     target_link_libraries(smx-integration-tests PRIVATE doctest_with_main ${HIDAPI_LIBRARIES} Threads::Threads)

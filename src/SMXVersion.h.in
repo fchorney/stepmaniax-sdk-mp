@@ -1,0 +1,6 @@
+#ifndef SMX_VERSION_H
+#define SMX_VERSION_H
+
+#define SMX_VERSION "@PROJECT_VERSION@"
+
+#endif
