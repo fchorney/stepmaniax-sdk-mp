@@ -145,7 +145,6 @@ TEST_CASE("Real hardware: input state reads")
         atomic<int> iPacketCount{0};
     } data;
 
-    SMX_SetInputStateMode(true);  // fire on every packet
     SMX_Start(
         [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
             auto *d = static_cast<CallbackData *>(pUser);
@@ -155,6 +154,8 @@ TEST_CASE("Real hardware: input state reads")
                 d->iPacketCount.fetch_add(1, memory_order_relaxed);
         },
         &data);
+
+    SMX_SetInputStateMode(true);  // fire on every packet
 
     REQUIRE(WaitFor([&]() { return data.bConnected.load(); }, 5000));
 
