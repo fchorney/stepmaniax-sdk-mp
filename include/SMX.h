@@ -147,6 +147,22 @@ SMX_API void SMX_ForceRecalibration(int pad);
 /// without waiting for the timeout period to elapse.
 SMX_API void SMX_ReenableAutoLights();
 
+/// Panel-side diagnostic test modes.
+/// These activate debug lighting on the panels and don't return data to the host.
+/// Lights cannot be updated while a panel test mode is active.
+enum PanelTestMode {
+    PanelTestMode_Off = '0',
+    PanelTestMode_PressureTest = '1',
+};
+
+/// Sets a panel test mode on all connected pads.
+/// When enabled, the SDK periodically resends the command to keep the mode active
+/// (the device times out after ~1 second without a refresh).
+/// Lights cannot be updated while a panel test mode is active.
+///
+/// @param mode The test mode to activate, or PanelTestMode_Off to disable.
+SMX_API void SMX_SetPanelTestMode(PanelTestMode mode);
+
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().
 ///

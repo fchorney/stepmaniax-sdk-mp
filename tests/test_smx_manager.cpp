@@ -670,3 +670,120 @@ TEST_CASE("SMX_ReenableAutoLights with no devices does not crash") {
 
     SMX_Stop();
 }
+
+// =========================================================================
+// SMX_SetPanelTestMode command format
+// =========================================================================
+
+TEST_CASE("SMX_SetPanelTestMode sends 't' command to both pads") {
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
+    pFakeP1->SetCaptureWrites(true);
+    pFakeP2->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeP1);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP2);
+
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponse(MakeConfigResponse());
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBothConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBothConnected);
+
+    pFakeP1->ClearCapturedWrites();
+    pFakeP2->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+
+    bool bGotP1Write = WaitFor([&]() {
+        return pFakeP1->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotP1Write);
+
+    // Check that "t 1\n" was sent (PanelTestMode_PressureTest = '1')
+    auto checkTestModeCmd = [](const vector<vector<uint8_t>> &writes, char mode) {
+        for(const auto &w : writes)
+        {
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND)
+            {
+                uint8_t payloadSize = w[2];
+                if(payloadSize >= 4 && w[3] == 't' && w[4] == ' ' && w[5] == (uint8_t)mode && w[6] == '\n')
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    CHECK(checkTestModeCmd(pFakeP1->GetCapturedWrites(), '1'));
+    CHECK(checkTestModeCmd(pFakeP2->GetCapturedWrites(), '1'));
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetPanelTestMode Off sends 't 0' command") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    // Enable and wait for the 't 1' command to actually be sent
+    pFakeDevice->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+
+    auto hasTestCmd = [](const vector<vector<uint8_t>> &writes, char mode) {
+        for(const auto &w : writes)
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND && w[2] >= 4 &&
+               w[3] == 't' && w[4] == ' ' && w[5] == (uint8_t)mode && w[6] == '\n')
+                return true;
+        return false;
+    };
+
+    bool bGotPressure = WaitFor([&]() {
+        return hasTestCmd(pFakeDevice->GetCapturedWrites(), '1');
+    });
+    REQUIRE(bGotPressure);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+
+    bool bGotOff = WaitFor([&]() {
+        return hasTestCmd(pFakeDevice->GetCapturedWrites(), '0');
+    });
+    CHECK(bGotOff);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetPanelTestMode with no devices does not crash") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+
+    SMX_Stop();
+}

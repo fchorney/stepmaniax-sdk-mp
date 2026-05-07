@@ -523,6 +523,13 @@ public:
             m_Device.SendCommand(string("S 1\n", 4));
     }
 
+    void SetPanelTestMode(PanelTestMode mode)
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        m_PanelTestMode = mode;
+        m_Cond.notify_all();
+    }
+
     void SetInputStateMode(bool bAlwaysFire)
     {
         for(auto & m_Device : m_Devices)
@@ -616,10 +623,30 @@ private:
                     m_Devices[i].FireConnectedCallback(i);
             }
 
+            UpdatePanelTestMode();
+
             // Wait for Report 6 data from USB polling thread, or timeout.
             m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
         }
         m_Lock.unlock();
+    }
+
+    /// Periodically resends the panel test mode command to keep it active.
+    /// The device times out after ~1 second without a refresh.
+    void UpdatePanelTestMode()
+    {
+        if(m_PanelTestMode == m_LastSentPanelTestMode &&
+           (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < 1.0))
+            return;
+
+        // TODO: When transitioning from Off to active (m_LastSentPanelTestMode == PanelTestMode_Off),
+        // send a lights-off command ("l" + 108 zero bytes + "\n") to clear panels before entering
+        // test mode. This matches the original SDK behavior. Requires lighting commands to be implemented first.
+
+        m_fLastPanelTestModeSentAt = GetMonotonicTime();
+        m_LastSentPanelTestMode = m_PanelTestMode;
+        for(auto & m_Device : m_Devices)
+            m_Device.SendCommand(ssprintf("t %c\n", m_PanelTestMode));
     }
 
     /// Enumerates all HID devices matching the SMX vendor ID and product ID.
@@ -708,6 +735,9 @@ private:
     SMXDevice m_Devices[2];
     function<void(int, SMXUpdateCallbackReason)> m_Callback;
     unique_ptr<IHIDEnumerator> m_pEnumerator;
+    PanelTestMode m_PanelTestMode = PanelTestMode_Off;
+    PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
+    double m_fLastPanelTestModeSentAt = 0;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -818,6 +848,13 @@ SMX_API void SMX_ForceRecalibration(const int pad)
 SMX_API void SMX_ReenableAutoLights()
 {
     if(g_pSMX) g_pSMX->ReenableAutoLights();
+}
+
+/// Sets a panel test mode on all connected pads.
+/// The SDK periodically resends the command to keep the mode active.
+SMX_API void SMX_SetPanelTestMode(PanelTestMode mode)
+{
+    if(g_pSMX) g_pSMX->SetPanelTestMode(mode);
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)

@@ -32,6 +32,7 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Factory reset | `SMX_FactoryReset` | Reset pad to default configuration |
 | Force recalibration | `SMX_ForceRecalibration` | Trigger immediate sensor recalibration |
 | Re-enable auto lights | `SMX_ReenableAutoLights` | Return panels to automatic step lighting |
+| Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 
 ### Not yet implemented
 
@@ -39,7 +40,6 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 |---------|-------------|------------|-------------|
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Medium | Read/write pad thresholds, lighting config, sensor settings. Config is already read internally but not exposed. |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
-| Panel test mode | `SMX_SetPanelTestMode` | Low | Panel-side diagnostic lighting (pressure test) |
 | Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | Platform LED strip | `SMX_SetPlatformLights` | Medium | Control the platform edge LED strip (firmware v4+) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
