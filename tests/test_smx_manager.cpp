@@ -365,3 +365,63 @@ TEST_CASE("Device with firmware < 5 uses 'g' (old config format) and converts") 
 
     SMX_Stop();
 }
+
+TEST_CASE("Device reconnects successfully after read error disconnect") {
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    int iConnectedCount = 0;
+    int iDisconnectedCount = 0;
+    struct CallbackData { int *pConnected; int *pDisconnected; };
+    CallbackData cbData = {&iConnectedCount, &iDisconnectedCount};
+
+    auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+        auto *data = static_cast<CallbackData*>(pUser);
+        if(reason & SMXUpdateCallback_Connected)
+            (*data->pConnected)++;
+        if(reason & SMXUpdateCallback_Disconnected)
+            (*data->pDisconnected)++;
+    };
+
+    SMX_StartWithEnumerator(callback, &cbData, unique_ptr<IHIDEnumerator>(pEnum));
+
+    // Wait for initial connection
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+    CHECK(iConnectedCount == 1);
+
+    // Trigger disconnect via read error
+    pFakeDevice->SetFailReadsAfterCount(1);
+    pFakeDevice->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00}); // one successful read, then fail
+
+    bool bDisconnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return !info.m_bConnected;
+    });
+    REQUIRE(bDisconnected);
+    CHECK(iDisconnectedCount >= 1);
+
+    // Reset the device for reconnection
+    pFakeDevice->SetFailReadsAfterCount(0); // stop failing
+    pEnum->ResetOpened("/dev/hidraw0");
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+
+    // Wait for reconnection
+    bool bReconnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+
+    CHECK(bReconnected);
+    CHECK(iConnectedCount >= 2);
+
+    SMX_Stop();
+}

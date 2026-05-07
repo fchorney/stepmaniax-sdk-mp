@@ -695,3 +695,31 @@ TEST_CASE("Move assignment transfers connection state") {
 
     CHECK_FALSE(conn.IsConnected());
 }
+
+TEST_CASE("Close clears read error flag for reconnection") {
+    class FailOnceDevice : public IHIDDevice {
+    public:
+        int Read(uint8_t *, size_t) override { return -1; }
+        int Write(const uint8_t *, size_t) override { return 64; }
+        void Close() override {}
+    };
+
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FailOnceDevice()));
+
+    // Trigger a read error
+    conn.PollUSBData();
+    CHECK(conn.HasReadError());
+
+    // Close should clear the error flag
+    conn.Close();
+    CHECK_FALSE(conn.HasReadError());
+
+    // Reopen with a working device — Update should not immediately error
+    auto pFake = new FakeHIDDevice();
+    conn.Open("/fake/path2", unique_ptr<IHIDDevice>(pFake));
+
+    string sError;
+    conn.Update(sError);
+    CHECK(sError.empty());
+}

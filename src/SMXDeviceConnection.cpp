@@ -112,6 +112,7 @@ void SMXDeviceConnection::Close()
     m_bActive = false;
     m_bGotInfo = false;
     m_iInputState.store(0);
+    m_bHadReadError.store(false, std::memory_order_relaxed);
 }
 
 /// Processes I/O operations. Called once per frame from the I/O thread.

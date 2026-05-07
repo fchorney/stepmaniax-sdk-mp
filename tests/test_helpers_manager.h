@@ -173,6 +173,13 @@ public:
         return nullptr;
     }
 
+    /// Resets the opened state for a device, allowing it to be re-opened (simulates reconnection).
+    void ResetOpened(const string &path)
+    {
+        for(auto &d : m_aDevices)
+            if(d.sPath == path) { d.bOpened = false; break; }
+    }
+
 private:
     // Non-owning wrapper that delegates to the shared FakeDevice
     class DeviceWrapper : public IHIDDevice
