@@ -189,11 +189,14 @@ public:
     /// or only when the state actually changes (false, default).
     void SetAlwaysFireInputCallback(bool b) { m_bAlwaysFireInputCallback.store(b, std::memory_order_relaxed); }
 
+    /// Returns true if the USB polling thread encountered a read error.
+    /// The main thread checks this to trigger device disconnect.
+    bool HasReadError() const { return m_bHadReadError.load(std::memory_order_relaxed); }
+
     /// Polls for available USB data, called by the USB polling thread.
     /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
-    /// @param sError [out] Error message if a read fails.
     /// @return True if Report 6 data was buffered.
-    bool PollUSBData(std::string &sError);
+    bool PollUSBData();
 
 private:
     /// Sends a device info request packet to the device.
@@ -226,6 +229,7 @@ private:
 
     std::atomic<uint16_t> m_iInputState{0};
     std::atomic<bool> m_bAlwaysFireInputCallback{false};
+    std::atomic<bool> m_bHadReadError{false};
 
     std::string m_sReport6Buffer;
     std::mutex m_Report6BufferMutex;

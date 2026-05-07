@@ -210,11 +210,11 @@ public:
         CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_Disconnected));
     }
 
-    bool PollUSBData(string &sError)
+    bool PollUSBData()
     {
         if(!m_Connection.IsConnected())
             return false;
-        return m_Connection.PollUSBData(sError);
+        return m_Connection.PollUSBData();
     }
 
     /// Queues a command to be sent to this device asynchronously.
@@ -521,12 +521,8 @@ private:
                 // Check both devices for available USB data
                 for(int i = 0; i < 2; i++)
                 {
-                    string sError;
-                    if(m_Devices[i].PollUSBData(sError))
+                    if(m_Devices[i].PollUSBData() || m_Devices[i].GetConnection()->HasReadError())
                         bHasReport6Data = true;
-
-                    if(!sError.empty())
-                        Log(ssprintf("USB polling error on device %i: %s", i, sError.c_str()));
                 }
             }
 

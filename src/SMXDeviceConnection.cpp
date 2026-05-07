@@ -31,6 +31,7 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
     m_iInputState(other.m_iInputState.load()),
     m_bAlwaysFireInputCallback(other.m_bAlwaysFireInputCallback.load()),
+    m_bHadReadError(other.m_bHadReadError.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
@@ -54,6 +55,7 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
         m_iInputState.store(other.m_iInputState.load());
         m_bAlwaysFireInputCallback.store(other.m_bAlwaysFireInputCallback.load());
+        m_bHadReadError.store(other.m_bHadReadError.load());
         m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
@@ -119,6 +121,14 @@ void SMXDeviceConnection::Update(string &sError)
     if(!m_pDevice)
     {
         sError = "Device not open";
+        return;
+    }
+
+    // If the USB polling thread encountered a read error, propagate it here
+    // so the main thread can close the device.
+    if(m_bHadReadError.load(std::memory_order_relaxed))
+    {
+        sError = "Error reading from device";
         return;
     }
 
@@ -368,9 +378,13 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
 ///
 /// @param sError [out] Error message if a read fails.
 /// @return True if Report 6 data was buffered.
-bool SMXDeviceConnection::PollUSBData(std::string &sError)
+bool SMXDeviceConnection::PollUSBData()
 {
     if(!m_pDevice)
+        return false;
+
+    // If we already had a read error, skip polling until the main thread handles it.
+    if(m_bHadReadError.load(std::memory_order_relaxed))
         return false;
 
     // Read and parse HID packets directly from the device.
@@ -384,7 +398,7 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
         const int res = m_pDevice->Read(rawbuf, HID_PACKET_SIZE);
         if(res < 0)
         {
-            sError = "Error reading from device";
+            m_bHadReadError.store(true, std::memory_order_relaxed);
             return false;
         }
         if(res == 0)
