@@ -7,7 +7,31 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <hidapi/hidapi.h>
+
+#include "SMXHIDInterface.h"
+
+// USB report flags used in the SMX protocol for packet fragmentation and control.
+#define PACKET_FLAG_START_OF_COMMAND   0x04  // Indicates start of a multi-packet command
+#define PACKET_FLAG_END_OF_COMMAND     0x01  // Indicates end of a multi-packet command
+#define PACKET_FLAG_HOST_CMD_FINISHED  0x02  // Device has finished processing command
+#define PACKET_FLAG_DEVICE_INFO        0x80  // This packet contains device info response
+
+// HID report IDs used in the SMX protocol.
+static constexpr uint8_t HID_REPORT_INPUT_STATE = 0x03;  // Input state (panel presses)
+static constexpr uint8_t HID_REPORT_COMMAND     = 0x05;  // Outgoing commands to device
+static constexpr uint8_t HID_REPORT_DATA        = 0x06;  // Incoming data/config from device
+
+// HID packet sizing.
+static constexpr size_t HID_PACKET_SIZE      = 64;  // Total HID packet size in bytes
+static constexpr size_t HID_MAX_PAYLOAD_SIZE = 61;  // Max payload per packet (64 - 3 byte header)
+
+// Command timeout.
+static constexpr double COMMAND_TIMEOUT_SECONDS = 2.0;  // Seconds before retrying a command
+
+// USB device identification.
+static constexpr uint16_t SMX_USB_VENDOR_ID  = 0x2341;
+static constexpr uint16_t SMX_USB_PRODUCT_ID = 0x8037;
+#define SMX_USB_PRODUCT_STRING L"StepManiaX"
 
 namespace SMX {
 
@@ -104,12 +128,12 @@ public:
     SMXDeviceConnection(SMXDeviceConnection &&other) noexcept;
     SMXDeviceConnection &operator=(SMXDeviceConnection &&other) noexcept;
 
-    /// Opens a HID connection to the device at the given path.
+    /// Opens a HID connection using the provided device handle.
     /// Automatically requests device info and enters a pending state until the info arrives.
-    /// @param sPath HID device path string.
-    /// @param sError [out] Error message if open fails.
-    /// @return True if the device was successfully opened, false otherwise.
-    bool Open(const std::string &sPath, std::string &sError);
+    /// @param sPath HID device path string (stored for identification).
+    /// @param pDevice Opened HID device to use for communication.
+    /// @return True if the device was successfully opened.
+    bool Open(const std::string &sPath, std::unique_ptr<IHIDDevice> pDevice);
 
     /// Closes the connection and cancels all pending commands.
     /// Invokes completion callbacks with empty strings to notify of cancellation.
@@ -161,11 +185,18 @@ public:
     /// @param cb Callback function with no parameters. Called immediately when input state changes.
     void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
 
+    /// Sets whether the input state callback fires on every Report 3 packet (true)
+    /// or only when the state actually changes (false, default).
+    void SetAlwaysFireInputCallback(bool b) { m_bAlwaysFireInputCallback.store(b, std::memory_order_relaxed); }
+
+    /// Returns true if the USB polling thread encountered a read error.
+    /// The main thread checks this to trigger device disconnect.
+    bool HasReadError() const { return m_bHadReadError.load(std::memory_order_relaxed); }
+
     /// Polls for available USB data, called by the USB polling thread.
     /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
-    /// @param sError [out] Error message if a read fails.
     /// @return True if Report 6 data was buffered.
-    bool PollUSBData(std::string &sError);
+    bool PollUSBData();
 
 private:
     /// Sends a device info request packet to the device.
@@ -188,7 +219,7 @@ private:
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 
-    hid_device *m_pDevice = nullptr;
+    std::unique_ptr<IHIDDevice> m_pDevice;
     std::string m_sPath;
     bool m_bActive = false;
     bool m_bGotInfo = false;
@@ -197,6 +228,8 @@ private:
     std::string m_sCurrentReadBuffer;
 
     std::atomic<uint16_t> m_iInputState{0};
+    std::atomic<bool> m_bAlwaysFireInputCallback{false};
+    std::atomic<bool> m_bHadReadError{false};
 
     std::string m_sReport6Buffer;
     std::mutex m_Report6BufferMutex;

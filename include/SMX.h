@@ -69,6 +69,12 @@ typedef void SMXUpdateCallback(int pad, SMXUpdateCallbackReason reason, void *pU
 /// The background I/O thread will automatically discover connected devices and
 /// invoke the update callback when their state changes.
 ///
+/// @warning The callback may be invoked from different background threads (the USB
+/// polling thread for input state changes, and the main I/O thread for connection
+/// and config events). Invocations are serialized internally so the callback will
+/// never be called from two threads simultaneously, but it will not necessarily be
+/// called from the application's main thread.
+///
 /// @param callback Function to be called asynchronously when devices are connected,
 ///                  disconnected, or their input state changes.
 /// @param pUser Application-defined pointer passed to all callbacks for context.
@@ -130,6 +136,15 @@ SMX_API void SMX_SetSerialNumbers();
 /// @param iUSBPollingUs Sleep time in microseconds for the USB polling thread (default: 1000).
 ///                      Controls input state latency. Lower values = lower latency but more CPU.
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
+
+/// Controls when the SMXUpdateCallback_InputState callback fires.
+/// By default (bAlwaysFire = false), the callback only fires when the input state
+/// actually changes. When set to true, the callback fires on every received Report 3
+/// packet, even if the state is unchanged from the previous packet.
+///
+/// @param bAlwaysFire If true, fire the input state callback on every Report 3 packet.
+///                    If false (default), only fire when the state changes.
+SMX_API void SMX_SetInputStateMode(bool bAlwaysFire);
 
 /// Returns the SDK version string.
 /// @return C-string containing the version (e.g., "0.1.0").

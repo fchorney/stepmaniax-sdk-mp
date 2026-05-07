@@ -1,4 +1,5 @@
 #include "SMXDeviceConnection.h"
+#include "SMX.h"
 
 #include <algorithm>
 #include <cstring>
@@ -15,12 +16,6 @@ namespace SMX {
 using namespace std;
 using namespace SMX;
 
-// USB report flags used in the SMX protocol for packet fragmentation and control.
-#define PACKET_FLAG_START_OF_COMMAND   0x04  // Indicates start of a multi-packet command
-#define PACKET_FLAG_END_OF_COMMAND     0x01  // Indicates end of a multi-packet command
-#define PACKET_FLAG_HOST_CMD_FINISHED  0x02  // Device has finished processing command
-#define PACKET_FLAG_DEVICE_INFO        0x80  // This packet contains device info response
-
 SMXDeviceConnection::SMXDeviceConnection() = default;
 
 SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
@@ -28,19 +23,21 @@ SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
 /// Move constructor transfers the HID connection and all pending I/O state from another instance.
 /// The source object is left in a disconnected state (m_pDevice set to nullptr).
 SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
-    m_pDevice(other.m_pDevice),
+    m_pDevice(std::move(other.m_pDevice)),
     m_sPath(std::move(other.m_sPath)),
     m_bActive(other.m_bActive),
     m_bGotInfo(other.m_bGotInfo),
     m_sReadBuffers(std::move(other.m_sReadBuffers)),
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
     m_iInputState(other.m_iInputState.load()),
+    m_bAlwaysFireInputCallback(other.m_bAlwaysFireInputCallback.load()),
+    m_bHadReadError(other.m_bHadReadError.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
-    m_pCurrentCommand(std::move(other.m_pCurrentCommand))
+    m_pCurrentCommand(std::move(other.m_pCurrentCommand)),
+    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback))
 {
-    other.m_pDevice = nullptr;
 }
 
 /// Move assignment operator transfers connection and state, properly closing existing connection.
@@ -50,36 +47,31 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
     if(this != &other)
     {
         Close();
-        m_pDevice = other.m_pDevice;
+        m_pDevice = std::move(other.m_pDevice);
         m_sPath = std::move(other.m_sPath);
         m_bActive = other.m_bActive;
         m_bGotInfo = other.m_bGotInfo;
         m_sReadBuffers = std::move(other.m_sReadBuffers);
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
         m_iInputState.store(other.m_iInputState.load());
+        m_bAlwaysFireInputCallback.store(other.m_bAlwaysFireInputCallback.load());
+        m_bHadReadError.store(other.m_bHadReadError.load());
         m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
-        other.m_pDevice = nullptr;
+        m_pInputStateChangedCallback = std::move(other.m_pInputStateChangedCallback);
     }
     return *this;
 }
 
-/// Opens a connection to the SMX device at the given HID path.
-/// Sets the device to non-blocking mode and automatically requests device information.
+/// Opens a connection to the SMX device using the provided HID device handle.
+/// Automatically requests device information.
 /// The device is considered fully connected once device info is received (see IsConnectedWithDeviceInfo).
-bool SMXDeviceConnection::Open(const string &sPath, string &sError)
+bool SMXDeviceConnection::Open(const string &sPath, unique_ptr<IHIDDevice> pDevice)
 {
-    m_pDevice = hid_open_path(sPath.c_str());
-    if(!m_pDevice)
-    {
-        sError = "Failed to open HID device: " + sPath;
-        return false;
-    }
-
+    m_pDevice = std::move(pDevice);
     m_sPath = sPath;
-    hid_set_nonblocking(m_pDevice, 1);
 
     // Request device info. The response is handled in HandleUsbPacket which
     // sets m_bGotInfo directly, so no callback capture of 'this' is needed.
@@ -106,8 +98,8 @@ void SMXDeviceConnection::Close()
             cmd->m_pComplete("");
     }
 
-    hid_close(m_pDevice);
-    m_pDevice = nullptr;
+    m_pDevice->Close();
+    m_pDevice.reset();
     m_sPath.clear();
     m_sReadBuffers.clear();
     m_sCurrentReadBuffer.clear();
@@ -120,6 +112,7 @@ void SMXDeviceConnection::Close()
     m_bActive = false;
     m_bGotInfo = false;
     m_iInputState.store(0);
+    m_bHadReadError.store(false, std::memory_order_relaxed);
 }
 
 /// Processes I/O operations. Called once per frame from the I/O thread.
@@ -129,6 +122,14 @@ void SMXDeviceConnection::Update(string &sError)
     if(!m_pDevice)
     {
         sError = "Device not open";
+        return;
+    }
+
+    // If the USB polling thread encountered a read error, propagate it here
+    // so the main thread can close the device.
+    if(m_bHadReadError.load(std::memory_order_relaxed))
+    {
+        sError = "Error reading from device";
         return;
     }
 
@@ -158,7 +159,7 @@ void SMXDeviceConnection::CheckReads(string &sError)
     if(m_pCurrentCommand && m_pCurrentCommand->m_bSent)
     {
         const double fSecondsAgo = GetMonotonicTime() - m_pCurrentCommand->m_fSentAt;
-        if(fSecondsAgo > 2.0)
+        if(fSecondsAgo > COMMAND_TIMEOUT_SECONDS)
         {
             Log("Command timed out. Retrying...");
             m_pCurrentCommand->m_bSent = false;
@@ -217,7 +218,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
             uint8_t packet_size;
             char player;
             char unused2;
-            uint8_t serial[16];
+            uint8_t serial[SERIAL_SIZE];
             uint16_t firmware_version;
             char unused3;
         };
@@ -229,7 +230,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         m_DeviceInfo.m_bP2 = (packet->player == '1');
         m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
 
-        const string sHexSerial = BinaryToHex(packet->serial, 16);
+        const string sHexSerial = BinaryToHex(packet->serial, SERIAL_SIZE);
         memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
 
         Log(ssprintf("Received device info. Master version: %i, P%i",
@@ -290,12 +291,11 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     m_aPendingCommands.pop_front();
 
     // Send all HID packets for this command sequentially.
-    // Each packet is 64 bytes (report ID + 63 bytes payload).
     const string &sData = pCmd->sData;
-    for(size_t offset = 0; offset < sData.size(); offset += 64)
+    for(size_t offset = 0; offset < sData.size(); offset += HID_PACKET_SIZE)
     {
-        const size_t len = min(static_cast<size_t>(64), sData.size() - offset);
-        const int res = hid_write(m_pDevice, reinterpret_cast<const unsigned char*>(sData.data()) + offset, len);
+        const size_t len = min(HID_PACKET_SIZE, sData.size() - offset);
+        const int res = m_pDevice->Write(reinterpret_cast<const uint8_t*>(sData.data()) + offset, len);
         if(res < 0)
         {
             sError = "Error writing to device";
@@ -322,9 +322,8 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
     pCmd->m_bIsDeviceInfoCommand = true;
 
     // Build device info request packet.
-    // Report ID 5, flag 0x80 (DEVICE_INFO), payload size 0.
-    string sPacket(64, '\0');
-    sPacket[0] = 5;  // report ID
+    string sPacket(HID_PACKET_SIZE, '\0');
+    sPacket[0] = HID_REPORT_COMMAND;  // report ID
     sPacket[1] = static_cast<char>(PACKET_FLAG_DEVICE_INFO);
     sPacket[2] = 0;
 
@@ -350,15 +349,15 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     string allPackets;
     int i = 0;
     do {
-        const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), 61);
+        const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), static_cast<int>(HID_MAX_PAYLOAD_SIZE));
         uint8_t iFlags = 0;
         if(i == 0)
             iFlags |= PACKET_FLAG_START_OF_COMMAND;
         if(i + iPacketSize == static_cast<int>(cmd.size()))
             iFlags |= PACKET_FLAG_END_OF_COMMAND;
 
-        string sPacket(64, '\0');
-        sPacket[0] = 5;  // report ID
+        string sPacket(HID_PACKET_SIZE, '\0');
+        sPacket[0] = HID_REPORT_COMMAND;  // report ID
         sPacket[1] = static_cast<char>(iFlags);
         sPacket[2] = static_cast<char>(iPacketSize);
         if(iPacketSize > 0)
@@ -380,23 +379,27 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
 ///
 /// @param sError [out] Error message if a read fails.
 /// @return True if Report 6 data was buffered.
-bool SMXDeviceConnection::PollUSBData(std::string &sError)
+bool SMXDeviceConnection::PollUSBData()
 {
     if(!m_pDevice)
+        return false;
+
+    // If we already had a read error, skip polling until the main thread handles it.
+    if(m_bHadReadError.load(std::memory_order_relaxed))
         return false;
 
     // Read and parse HID packets directly from the device.
     // The common case is a single 3-byte Report 3 (input state) packet per call.
     // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
     std::string report6Packets;
-    unsigned char rawbuf[64];
+    uint8_t rawbuf[HID_PACKET_SIZE];
 
     while(true)
     {
-        const int res = hid_read(m_pDevice, rawbuf, 64);
+        const int res = m_pDevice->Read(rawbuf, HID_PACKET_SIZE);
         if(res < 0)
         {
-            sError = "Error reading from device";
+            m_bHadReadError.store(true, std::memory_order_relaxed);
             return false;
         }
         if(res == 0)
@@ -407,21 +410,20 @@ bool SMXDeviceConnection::PollUSBData(std::string &sError)
 
         const uint8_t iReportId = rawbuf[0];
 
-        if(iReportId == 3)
+        if(iReportId == HID_REPORT_INPUT_STATE)
         {
             // Input state report: 3 bytes (ID + 2 bytes little-endian state)
             if(res < 3)
                 continue;
 
             const uint16_t newState = (rawbuf[2] << 8) | rawbuf[1];
-            if(m_iInputState.load(std::memory_order_relaxed) != newState)
-            {
+            const bool bChanged = m_iInputState.load(std::memory_order_relaxed) != newState;
+            if(bChanged)
                 m_iInputState.store(newState, std::memory_order_relaxed);
-                if(m_pInputStateChangedCallback)
-                    m_pInputStateChangedCallback();
-            }
+            if((bChanged || m_bAlwaysFireInputCallback.load(std::memory_order_relaxed)) && m_pInputStateChangedCallback)
+                m_pInputStateChangedCallback();
         }
-        else if(iReportId == 6)
+        else if(iReportId == HID_REPORT_DATA)
         {
             // Command/config report: variable length [ID][flags][size][payload...]
             if(res < 3)

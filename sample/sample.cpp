@@ -59,16 +59,29 @@ int main(int argc, char *argv[])
     printf("SMX SDK Multi Platform v%s\n", SMX_Version());
     SMX_Start(OnStateChanged, nullptr);
 
-    if(argc >= 2)
+    bool bAllPackets = false;
+    for(int i = 1; i < argc; i++)
+    {
+        if(std::string(argv[i]) == "--all-packets")
+            bAllPackets = true;
+    }
+
+    if(argc >= 2 && argv[1][0] != '-')
     {
         int mainMs = atoi(argv[1]);
-        int usbUs = argc >= 3 ? atoi(argv[2]) : 1000;
+        int usbUs = argc >= 3 && argv[2][0] != '-' ? atoi(argv[2]) : 1000;
         SMX_SetPollingRate(mainMs, usbUs);
         printf("Polling rate: main thread %dms, USB thread %dus\n", mainMs, usbUs);
     }
 
+    if(bAllPackets)
+    {
+        SMX_SetInputStateMode(true);
+        printf("Input state mode: fire on every Report 3 packet\n");
+    }
+
     printf("Scanning for StepManiaX devices... Press Ctrl+C to quit.\n");
-    printf("Usage: %s [main_thread_ms] [usb_polling_us]\n", argv[0]);
+    printf("Usage: %s [main_thread_ms] [usb_polling_us] [--all-packets]\n", argv[0]);
 
     while(!g_shouldExit)
     {

@@ -19,13 +19,32 @@ This SDK uses a two-thread design that differs from the original StepManiaX SDK.
 - **USB polling thread** — continuously reads HID data from both pads. Input state packets (Report 3) are parsed inline and update an atomic variable immediately, ensuring the lowest possible latency for panel press/release detection. Non-input packets (Report 6) are buffered for the main thread.
 - **Main I/O thread** — handles device discovery, connection management, configuration, and command processing. Wakes on Report 6 data from the USB polling thread or on a configurable timeout.
 
-Both thread sleep intervals are configurable via `SMX_SetPollingRate(int mainThreadMs, int usbPollingUs)`. The USB polling thread defaults to 1000µs between cycles; the main thread defaults to 100ms.
+Both thread sleep intervals are configurable via `SMX_SetPollingRate(int mainThreadMs, int usbPollingUs)`. The USB polling thread defaults to 1000µs between cycles; the main thread defaults to 50ms.
+
+### Device report rate
+
+The USB polling thread reads as fast as the device sends data, but the actual input report rate is determined by the pad's firmware — not the SDK's polling interval. Based on observation (the pad firmware is not open source):
+
+- **Idle:** ~10 Report 3 packets/sec (likely a periodic heartbeat)
+- **Active input:** ~50 packets/sec during panel presses (one report per state transition)
+
+This suggests the pad only sends input reports when the panel state changes or on a low-frequency heartbeat, rather than continuously streaming at the USB endpoint's maximum rate. The SDK's polling interval only needs to be fast enough to not miss packets between reads — it does not control how often the device sends them.
 
 ## Dependencies
 
 - **CMake** 3.14+
 - **C++14** compiler
 - **[hidapi](https://github.com/libusb/hidapi)** — lightweight HID library
+
+## Original SDK source
+
+The original StepManiaX SDK is included as a git submodule at `original_sdk/` for reference and comparison during development. To initialize it:
+
+```bash
+git submodule update --init
+```
+
+This is optional and not required to build the project.
 
 ## Building
 
@@ -134,6 +153,8 @@ By default, the build produces a **shared library** (`libsmx-mp.so` / `libsmx-mp
 |--------|---------|-------------|
 | `BUILD_SHARED_LIBS` | `ON` | Build shared library (set to `OFF` for static) |
 | `BUILD_SAMPLE` | `OFF` | Build the sample application |
+| `BUILD_TESTS` | `OFF` | Build unit tests |
+| `BUILD_INTEGRATION_TESTS` | `OFF` | Build integration tests (require real hardware) |
 
 ```bash
 cmake ..                                  # shared lib only (default)
@@ -164,6 +185,41 @@ mingw32-make
 ```
 
 Only the public `SMX_*` API functions are exported from the shared library. All internal symbols are hidden.
+
+## Running tests
+
+The project uses [doctest](https://github.com/doctest/doctest) for unit testing. Tests are not built by default.
+
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_TESTS=ON
+make
+ctest
+```
+
+Or run the test binary directly for more detailed output:
+
+```bash
+./smx-tests
+```
+
+doctest is fetched automatically via CMake's FetchContent — no manual installation required.
+
+### Integration tests
+
+Integration tests require a physical SMX pad connected via USB and are built separately:
+
+```bash
+cmake .. -DBUILD_INTEGRATION_TESTS=ON
+make smx-integration-tests
+./smx-integration-tests
+```
+
+Tests skip gracefully if no hardware is detected. To record HID traffic during integration tests (for later replay-based regression testing):
+
+```bash
+SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
+```
 
 ## Running the sample
 
@@ -218,6 +274,9 @@ void SMX_SetSerialNumbers();
 // Configure thread sleep intervals (main thread ms, USB polling thread us).
 void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 
+// Fire input state callback on every packet (true) or only on change (false, default).
+void SMX_SetInputStateMode(bool bAlwaysFire);
+
 // Get SDK version string.
 const char *SMX_Version();
 ```
@@ -231,7 +290,7 @@ The `SMXUpdateCallback` receives a `reason` bitmask indicating what triggered th
 | Flag | Value | Triggered when |
 |------|-------|----------------|
 | `SMXUpdateCallback_Updated` | `1 << 0` | Always set on every callback. Use as a catch-all. |
-| `SMXUpdateCallback_InputState` | `1 << 1` | Panel press/release state changed. Only fires when state actually changes, not on every received input packet. Call `SMX_GetInputState()` for the new state. |
+| `SMXUpdateCallback_InputState` | `1 << 1` | Panel press/release state changed. By default, only fires when state actually changes. Call `SMX_SetInputStateMode(true)` to fire on every received input packet instead. Call `SMX_GetInputState()` for the current state. |
 | `SMXUpdateCallback_Connected` | `1 << 2` | A pad has become fully connected (device info and config received). |
 | `SMXUpdateCallback_Disconnected` | `1 << 3` | A pad has been disconnected. |
 | `SMXUpdateCallback_ConfigUpdated` | `1 << 4` | Device configuration has been received or updated. |
@@ -304,12 +363,40 @@ Panel: ┌───┬───┬───┐
 │   ├── SMX.cpp                  # Helpers, device logic, manager, API implementation
 │   ├── SMXDeviceConnection.h    # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp  # HID I/O class (implementation)
+│   ├── SMXHIDInterface.h        # HID abstraction interfaces
+│   ├── SMXHIDInterface.cpp      # Real hidapi-backed implementation
+│   ├── SMXHIDRecorder.h         # HID traffic record/replay
+│   ├── SMXHIDRecorder.cpp       # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h        # Internal config struct
 │   └── SMXConfigPacket.cpp      # Old firmware config format conversion
+├── tests/
+│   ├── test_main.cpp            # Basic API tests
+│   ├── test_device_connection.cpp # Device connection tests with fake HID
+│   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
+│   ├── test_config_packet.cpp   # Config format conversion tests
+│   ├── test_helpers.cpp         # Utility function tests
+│   ├── test_helpers_manager.h    # Shared test infrastructure for manager-level tests
+│   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
+│   └── test_integration.cpp     # Integration tests (real hardware)
 ├── sample/
 │   └── sample.cpp               # Sample application
 └── CMakeLists.txt               # Build configuration
 ```
+
+## HID abstraction layer
+
+All USB HID communication goes through two interfaces defined in `src/SMXHIDInterface.h`:
+
+- `IHIDDevice` — represents an open connection to a single device (Read, Write, Close)
+- `IHIDEnumerator` — handles device discovery and lifecycle (Init, Exit, Enumerate, Open)
+
+The real implementation in `SMXHIDInterface.cpp` wraps hidapi. This is the only file that includes `<hidapi/hidapi.h>` or calls hidapi functions directly.
+
+This abstraction exists for two reasons:
+
+1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
+
+2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
 
 ## Roadmap
 

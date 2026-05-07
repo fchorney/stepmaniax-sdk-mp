@@ -47,6 +47,7 @@ option(BUILD_SAMPLE "Build the sample application" OFF)
 add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
+    src/SMXHIDInterface.cpp
     src/SMX.cpp
 )
 
@@ -80,4 +81,77 @@ endif()
 if(BUILD_SAMPLE)
     add_executable(smx-sample sample/sample.cpp)
     target_link_libraries(smx-sample PRIVATE smx-mp)
+endif()
+
+# Tests
+option(BUILD_TESTS "Build tests" OFF)
+option(BUILD_INTEGRATION_TESTS "Build integration tests (require real hardware)" OFF)
+
+if(BUILD_TESTS OR BUILD_INTEGRATION_TESTS)
+    include(FetchContent)
+    FetchContent_Declare(
+        doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG v2.5.2
+    )
+    FetchContent_MakeAvailable(doctest)
+    enable_testing()
+endif()
+
+if(BUILD_TESTS)
+    # Tests need access to internal symbols (SMXDeviceConnection, SMX_StartWithEnumerator)
+    # that are hidden in the shared library, so compile sources directly into the test binary.
+    add_executable(smx-tests
+        tests/test_main.cpp
+        tests/test_device_connection.cpp
+        tests/test_smx_manager.cpp
+        tests/test_config_packet.cpp
+        tests/test_helpers.cpp
+        tests/test_move_semantics.cpp
+        tests/test_replay.cpp
+        src/SMXConfigPacket.cpp
+        src/SMXDeviceConnection.cpp
+        src/SMXHIDInterface.cpp
+        src/SMXHIDRecorder.cpp
+        src/SMX.cpp
+    )
+    target_compile_definitions(smx-tests PRIVATE
+        SMX_EXPORTS
+        CAPTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/capture"
+    )
+    target_include_directories(smx-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${HIDAPI_INCLUDE_DIRS}
+    )
+    target_link_libraries(smx-tests PRIVATE doctest_with_main ${HIDAPI_LIBRARIES} Threads::Threads)
+    if(HIDAPI_LIBRARY_DIRS)
+        target_link_directories(smx-tests PRIVATE ${HIDAPI_LIBRARY_DIRS})
+    endif()
+    add_test(NAME smx-tests COMMAND smx-tests)
+endif()
+
+if(BUILD_INTEGRATION_TESTS)
+    # Integration tests require real SMX hardware connected via USB.
+    # Run with SMX_CAPTURE_DIR=/path/to/dir to record HID traffic for regression tests.
+    add_executable(smx-integration-tests
+        tests/test_main.cpp
+        tests/test_integration.cpp
+        src/SMXConfigPacket.cpp
+        src/SMXDeviceConnection.cpp
+        src/SMXHIDInterface.cpp
+        src/SMXHIDRecorder.cpp
+        src/SMX.cpp
+    )
+    target_compile_definitions(smx-integration-tests PRIVATE SMX_EXPORTS)
+    target_include_directories(smx-integration-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${HIDAPI_INCLUDE_DIRS}
+    )
+    target_link_libraries(smx-integration-tests PRIVATE doctest_with_main ${HIDAPI_LIBRARIES} Threads::Threads)
+    if(HIDAPI_LIBRARY_DIRS)
+        target_link_directories(smx-integration-tests PRIVATE ${HIDAPI_LIBRARY_DIRS})
+    endif()
+    add_test(NAME smx-integration-tests COMMAND smx-integration-tests)
 endif()

@@ -22,10 +22,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include <hidapi/hidapi.h>
 
 #include "SMXConfigPacket.h"
 #include "SMXDeviceConnection.h"
+#include "SMXHIDInterface.h"
 
 using namespace std;
 
@@ -194,7 +194,7 @@ public:
         return IsConnectedLocked();
     }
 
-    bool OpenDevice(const string &sPath, string &sError) { return m_Connection.Open(sPath, sError); }
+    bool OpenDevice(const string &sPath, unique_ptr<IHIDDevice> pDevice) { return m_Connection.Open(sPath, std::move(pDevice)); }
 
     void SetConnectionCallbacks()
     {
@@ -210,11 +210,11 @@ public:
         CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_Disconnected));
     }
 
-    bool PollUSBData(string &sError)
+    bool PollUSBData()
     {
         if(!m_Connection.IsConnected())
             return false;
-        return m_Connection.PollUSBData(sError);
+        return m_Connection.PollUSBData();
     }
 
     /// Queues a command to be sent to this device asynchronously.
@@ -290,6 +290,16 @@ public:
         return m_Connection.GetInputState();
     }
 
+    /// Fires the Connected callback for this device using the given slot index.
+    /// Called by the manager after device ordering is corrected.
+    void FireConnectedCallback(int pad) const
+    {
+        if(!m_pUpdateCallback)
+            return;
+        m_pUpdateCallback(pad, static_cast<SMXUpdateCallbackReason>(
+            SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated | SMXUpdateCallback_Connected));
+    }
+
     /// Updates the device state, called from the I/O thread each frame.
     /// Checks for input changes, processes received packets, and manages the
     /// connection lifecycle. Called with the manager's lock already held.
@@ -330,7 +340,7 @@ private:
 
     /// Processes received packets from the device, extracting configuration data.
     /// Reads packets from the connection and updates the cached config when a
-    /// complete config packet is received. Invokes the update callback on config change.
+    /// complete config packet is received.
     void HandlePackets()
     {
         string buf;
@@ -365,12 +375,9 @@ private:
                 memcpy(&m_Config, buf.data() + 2, min(static_cast<int>(iSize), static_cast<int>(sizeof(m_Config))));
             }
 
-            const bool bFirstConfig = !m_bHaveConfig;
             m_bHaveConfig = true;
-            SMXUpdateCallbackReason reason = static_cast<SMXUpdateCallbackReason>(
-                SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated |
-                (bFirstConfig ? SMXUpdateCallback_Connected : 0));
-            CallUpdateCallback(reason);
+            CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(
+                SMXUpdateCallback_Updated | SMXUpdateCallback_ConfigUpdated));
         }
     }
 
@@ -408,8 +415,26 @@ public:
     /// Constructor initializes the manager and starts the background I/O thread.
     /// @param callback Function to be invoked when device state changes.
     explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
-        m_Callback(callback)
+        m_Callback(callback),
+        m_pEnumerator(CreateHIDAPIEnumerator())
     {
+        m_pEnumerator->Init();
+        for(auto & m_Device : m_Devices)
+        {
+            m_Device.SetLock(&m_Lock);
+            m_Device.SetUpdateCallback(callback);
+            m_Device.SetConnectionCallbacks();
+        }
+        m_Thread = thread([this] { ThreadMain(); });
+        m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
+    }
+
+    /// Constructor that accepts a custom enumerator (for testing).
+    SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback, unique_ptr<IHIDEnumerator> pEnumerator):
+        m_Callback(callback),
+        m_pEnumerator(std::move(pEnumerator))
+    {
+        m_pEnumerator->Init();
         for(auto & m_Device : m_Devices)
         {
             m_Device.SetLock(&m_Lock);
@@ -433,6 +458,7 @@ public:
         {
             m_USBPollingThread.join();
         }
+        m_pEnumerator->Exit();
     }
 
     /// Retrieves a pointer to a device by pad index (0 or 1).
@@ -467,6 +493,12 @@ public:
         m_iUSBPollingSleepUs.store(iUSBPollingUs);
     }
 
+    void SetInputStateMode(bool bAlwaysFire)
+    {
+        for(auto & m_Device : m_Devices)
+            m_Device.GetConnection()->SetAlwaysFireInputCallback(bAlwaysFire);
+    }
+
 private:
     /// Main loop for the USB polling thread. Runs continuously, checking both devices
     /// for available USB data and signaling the main I/O thread when data is found.
@@ -489,12 +521,8 @@ private:
                 // Check both devices for available USB data
                 for(int i = 0; i < 2; i++)
                 {
-                    string sError;
-                    if(m_Devices[i].PollUSBData(sError))
+                    if(m_Devices[i].PollUSBData() || m_Devices[i].GetConnection()->HasReadError())
                         bHasReport6Data = true;
-
-                    if(!sError.empty())
-                        Log(ssprintf("USB polling error on device %i: %s", i, sError.c_str()));
                 }
             }
 
@@ -521,6 +549,8 @@ private:
         {
             AttemptConnections();
 
+            bool bWasConnected[2] = {m_Devices[0].IsConnected(), m_Devices[1].IsConnected()};
+
             for(int i = 0; i < 2; i++)
             {
                 string sError;
@@ -532,7 +562,29 @@ private:
                 }
             }
 
-            CorrectDeviceOrder();
+            // Correct device ordering BEFORE firing Connected callbacks.
+            // This ensures SMX_GetInfo(pad) returns the correct device when
+            // the callback handler queries it.
+            const bool bSwapped = CorrectDeviceOrder();
+
+            // Detect which slots just transitioned to connected, accounting for swap.
+            bool bJustConnected[2] = {
+                !bWasConnected[0] && m_Devices[0].IsConnected(),
+                !bWasConnected[1] && m_Devices[1].IsConnected()
+            };
+            if(bSwapped)
+            {
+                // After a swap, slot i now holds what was in slot 1-i before.
+                // A device that "just connected" in the old slot is now in the new slot.
+                bJustConnected[0] = !bWasConnected[1] && m_Devices[0].IsConnected();
+                bJustConnected[1] = !bWasConnected[0] && m_Devices[1].IsConnected();
+            }
+
+            for(int i = 0; i < 2; i++)
+            {
+                if(bJustConnected[i])
+                    m_Devices[i].FireConnectedCallback(i);
+            }
 
             // Wait for Report 6 data from USB polling thread, or timeout.
             m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
@@ -549,21 +601,19 @@ private:
         if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
             return;
 
-        // Enumerate SMX devices via hidapi.
-        hid_device_info *devs = hid_enumerate(0x2341, 0x8037);
-        for(const hid_device_info *cur = devs; cur; cur = cur->next)
+        // Enumerate SMX devices via the HID enumerator.
+        auto devs = m_pEnumerator->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+        for(const auto &dev : devs)
         {
-            if(!cur->product_string || wcscmp(cur->product_string, L"StepManiaX") != 0)
+            if(dev.sProduct != SMX_USB_PRODUCT_STRING)
                 continue;
-            if(!cur->path)
+            if(dev.sPath.empty())
                 continue;
-
-            string sPath = cur->path;
 
             // Skip if already open.
             bool bOpen = false;
             for(const auto & m_Device : m_Devices)
-                if(m_Device.GetDevicePath() == sPath) { bOpen = true; break; }
+                if(m_Device.GetDevicePath() == dev.sPath) { bOpen = true; break; }
             if(bOpen) continue;
 
             // Find an empty slot.
@@ -573,13 +623,15 @@ private:
 
             if(!pSlot) { Log("No available slots for device."); break; }
 
-            Log("Opening SMX device: " + sPath);
-            string sError;
-            pSlot->OpenDevice(sPath, sError);
-            if(!sError.empty())
-                Log("Error opening device: " + sError);
+            Log("Opening SMX device: " + dev.sPath);
+            auto pDevice = m_pEnumerator->Open(dev.sPath);
+            if(!pDevice)
+            {
+                Log("Error opening device: " + dev.sPath);
+                continue;
+            }
+            pSlot->OpenDevice(dev.sPath, std::move(pDevice));
         }
-        hid_free_enumeration(devs);
     }
 
     /// Ensures devices are in the correct order, swapping them if necessary.
@@ -589,7 +641,8 @@ private:
     ///
     /// This function is called each I/O thread iteration to maintain proper
     /// device ordering as devices are connected and disconnected.
-    void CorrectDeviceOrder()
+    /// @return true if devices were swapped.
+    bool CorrectDeviceOrder()
     {
         SMXInfo info[2];
         m_Devices[0].GetInfoLocked(info[0]);
@@ -597,7 +650,7 @@ private:
 
         if(info[0].m_bConnected && info[1].m_bConnected &&
            m_Devices[0].IsPlayer2Locked() == m_Devices[1].IsPlayer2Locked())
-            return;
+            return false;
 
         const bool bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
                      (info[1].m_bConnected && !m_Devices[1].IsPlayer2Locked());
@@ -606,7 +659,13 @@ private:
             SMXDevice temp(std::move(m_Devices[0]));
             m_Devices[0] = std::move(m_Devices[1]);
             m_Devices[1] = std::move(temp);
+
+            // Re-bind callbacks after swap since the captured 'this' pointers
+            // in the lambdas now point to the wrong SMXDevice objects.
+            m_Devices[0].SetConnectionCallbacks();
+            m_Devices[1].SetConnectionCallbacks();
         }
+        return bSwap;
     }
 
     recursive_mutex m_Lock;
@@ -618,6 +677,7 @@ private:
     atomic<int> m_iUSBPollingSleepUs{1000};
     SMXDevice m_Devices[2];
     function<void(int, SMXUpdateCallbackReason)> m_Callback;
+    unique_ptr<IHIDEnumerator> m_pEnumerator;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -634,13 +694,19 @@ shared_ptr<SMXManager> g_pSMX;
 /// Must be called once before using any other SDK functions.
 /// The background I/O thread will automatically discover connected devices and
 /// invoke the update callback when their state changes.
+///
+/// @warning The callback may be invoked from different background threads (the USB
+/// polling thread for input state changes, and the main I/O thread for connection
+/// and config events). Invocations are serialized internally so the callback will
+/// never be called from two threads simultaneously, but it will not necessarily be
+/// called from the application's main thread.
+///
 /// @param callback Function to be called asynchronously when devices are connected,
 ///                  disconnected, or their input state changes.
 /// @param pUser Application-defined pointer passed to all callbacks for context.
 SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 {
     if(g_pSMX) return;
-    hid_init();
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
@@ -654,7 +720,6 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 SMX_API void SMX_Stop()
 {
     g_pSMX.reset();
-    hid_exit();
 }
 
 /// Sets a custom callback function to receive diagnostic log messages.
@@ -707,6 +772,11 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
     if(g_pSMX) g_pSMX->SetPollingRate(iMainThreadMs, iUSBPollingUs);
 }
 
+SMX_API void SMX_SetInputStateMode(bool bAlwaysFire)
+{
+    if(g_pSMX) g_pSMX->SetInputStateMode(bAlwaysFire);
+}
+
 /// Returns the SDK version string.
 /// @return C-string containing the version (e.g., "0.1.0").
 SMX_API const char *SMX_Version()
@@ -720,5 +790,21 @@ SMX_API const char *SMX_Version()
 SMX_API double SMX_GetMonotonicTime()
 {
     return GetMonotonicTime();
+}
+
+// ---------------------------------------------------------------------------
+// Test-only API (not exported from shared library, linked directly in tests)
+// ---------------------------------------------------------------------------
+
+/// Starts the SDK with a custom HID enumerator for testing.
+/// This allows tests to inject fake devices without real hardware.
+void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser, std::unique_ptr<SMX::IHIDEnumerator> pEnumerator)
+{
+    if(g_pSMX) return;
+
+    auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
+        callback(pad, reason, pUser);
+    };
+    g_pSMX = make_shared<SMXManager>(cb, std::move(pEnumerator));
 }
 
