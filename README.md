@@ -144,6 +144,8 @@ By default, the build produces a **shared library** (`libsmx-mp.so` / `libsmx-mp
 |--------|---------|-------------|
 | `BUILD_SHARED_LIBS` | `ON` | Build shared library (set to `OFF` for static) |
 | `BUILD_SAMPLE` | `OFF` | Build the sample application |
+| `BUILD_TESTS` | `OFF` | Build unit tests |
+| `BUILD_INTEGRATION_TESTS` | `OFF` | Build integration tests (require real hardware) |
 
 ```bash
 cmake ..                                  # shared lib only (default)
@@ -193,6 +195,22 @@ Or run the test binary directly for more detailed output:
 ```
 
 doctest is fetched automatically via CMake's FetchContent — no manual installation required.
+
+### Integration tests
+
+Integration tests require a physical SMX pad connected via USB and are built separately:
+
+```bash
+cmake .. -DBUILD_INTEGRATION_TESTS=ON
+make smx-integration-tests
+./smx-integration-tests
+```
+
+Tests skip gracefully if no hardware is detected. To record HID traffic during integration tests (for later replay-based regression testing):
+
+```bash
+SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
+```
 
 ## Running the sample
 
@@ -338,6 +356,8 @@ Panel: ┌───┬───┬───┐
 │   ├── SMXDeviceConnection.cpp  # HID I/O class (implementation)
 │   ├── SMXHIDInterface.h        # HID abstraction interfaces
 │   ├── SMXHIDInterface.cpp      # Real hidapi-backed implementation
+│   ├── SMXHIDRecorder.h         # HID traffic record/replay
+│   ├── SMXHIDRecorder.cpp       # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h        # Internal config struct
 │   └── SMXConfigPacket.cpp      # Old firmware config format conversion
 ├── tests/
@@ -345,7 +365,8 @@ Panel: ┌───┬───┬───┐
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp   # Config format conversion tests
-│   └── test_helpers.cpp         # Utility function tests
+│   ├── test_helpers.cpp         # Utility function tests
+│   └── test_integration.cpp     # Integration tests (real hardware)
 ├── sample/
 │   └── sample.cpp               # Sample application
 └── CMakeLists.txt               # Build configuration

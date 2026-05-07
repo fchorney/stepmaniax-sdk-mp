@@ -51,6 +51,8 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── SMXDeviceConnection.cpp      # HID I/O class (implementation)
 │   ├── SMXHIDInterface.h            # HID abstraction interfaces
 │   ├── SMXHIDInterface.cpp          # Real hidapi-backed implementation
+│   ├── SMXHIDRecorder.h             # HID traffic record/replay
+│   ├── SMXHIDRecorder.cpp           # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h            # Internal config struct
 │   └── SMXConfigPacket.cpp          # Old firmware config format conversion
 ├── tests/
@@ -58,7 +60,8 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_device_connection.cpp   # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp         # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp       # Config format conversion tests
-│   └── test_helpers.cpp             # Utility function tests
+│   ├── test_helpers.cpp             # Utility function tests
+│   └── test_integration.cpp         # Integration tests (real hardware)
 ├── sample/sample.cpp                # Sample application
 ├── original_sdk/                    # Original SDK (git submodule, reference only)
 └── CMakeLists.txt                   # Build configuration
@@ -84,10 +87,29 @@ ctest
 
 The HID abstraction layer (`IHIDDevice`/`IHIDEnumerator`) enables testing without physical hardware. Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic.
 
-Areas for further test coverage:
+### HID traffic record/replay
 
-- Record/replay of real HID traffic for regression testing
-- Integration tests that require actual hardware (gated behind a flag or separate CI step)
+The `SMXHIDRecorder` module (`src/SMXHIDRecorder.h/.cpp`) provides:
+
+- **RecordingHIDDevice / RecordingHIDEnumerator** — decorator wrappers that log all HID reads/writes with timestamps to binary `.smxhid` capture files. Used during integration tests to capture real device traffic.
+- **ReplayHIDDevice** — loads a `.smxhid` capture file and replays reads in order, allowing regression tests to run against real recorded traffic without hardware.
+- **Binary format:** `"SMXHID\x01"` magic header + records of `[type:1][timestamp_us:8][size:2][data:size]`.
+
+### Integration tests (real hardware)
+
+Integration tests require a physical SMX pad and are gated behind a separate CMake flag:
+
+```bash
+cmake .. -DBUILD_INTEGRATION_TESTS=ON
+make smx-integration-tests
+./smx-integration-tests
+```
+
+Tests skip gracefully if no hardware is detected. To record HID traffic during integration tests for later replay-based regression testing:
+
+```bash
+SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
+```
 
 ## Building
 
