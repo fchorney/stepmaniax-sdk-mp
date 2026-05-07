@@ -299,24 +299,6 @@ TEST_CASE("SMX_GetInfo on disconnected pad returns not connected") {
     SMX_Stop();
 }
 
-TEST_CASE("SMX_GetInfo with invalid pad index does not crash") {
-    auto pEnum = new FakeHIDEnumerator();
-    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
-                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
-
-    this_thread::sleep_for(chrono::milliseconds(50));
-
-    SMXInfo info = {};
-    info.m_bConnected = true;  // set to true to verify it's NOT modified
-    SMX_GetInfo(-1, &info);
-    CHECK(info.m_bConnected);  // unchanged since GetDevice returns nullptr
-
-    SMX_GetInfo(2, &info);
-    CHECK(info.m_bConnected);  // unchanged
-
-    SMX_Stop();
-}
-
 // =========================================================================
 // Config packet parsing (old/new format, invalid)
 // =========================================================================

@@ -476,7 +476,7 @@ TEST_CASE("Commands are serialized - second waits for first") {
     CHECK(pFake->GetWrites().size() > writesAfterFirst);
 }
 
-TEST_CASE("Command timeout retries the command") {
+TEST_CASE("Pending command callback does not fire without response") {
     // We need a fake GetMonotonicTime to test timeouts.
     // Since GetMonotonicTime uses a real clock, we can't easily fake it.
     // Instead, verify the timeout logic structurally: send a command,
