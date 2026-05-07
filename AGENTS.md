@@ -61,6 +61,7 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_smx_manager.cpp         # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp       # Config format conversion tests
 │   ├── test_helpers.cpp             # Utility function tests
+│   ├── test_helpers_manager.h       # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp     # Move semantics / pad swap regression tests
 │   └── test_integration.cpp         # Integration tests (real hardware)
 ├── sample/sample.cpp                # Sample application
@@ -87,6 +88,8 @@ ctest
 ```
 
 The HID abstraction layer (`IHIDDevice`/`IHIDEnumerator`) enables testing without physical hardware. Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic.
+
+Shared test helpers (fake devices, packet builders, utility functions) that serve multiple test files should be factored into their own header file (e.g., `test_helpers_manager.h`) rather than duplicated across test files. Avoid code duplication in tests just as you would in production code.
 
 ### HID traffic record/replay
 

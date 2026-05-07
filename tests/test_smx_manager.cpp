@@ -1,257 +1,16 @@
 #include <doctest/doctest.h>
-#include "SMX.h"
-#include "SMXDeviceConnection.h"
-#include "SMXHIDInterface.h"
-
-#include <chrono>
-#include <cstring>
-#include <functional>
-#include <memory>
-#include <mutex>
-#include <queue>
-#include <string>
-#include <thread>
-#include <vector>
+#include "test_helpers_manager.h"
 
 using namespace std;
 using namespace SMX;
-
-// Declared in SMX.cpp (test-only, not exported from shared lib)
-extern void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser,
-                                     std::unique_ptr<SMX::IHIDEnumerator> pEnumerator);
-
-// --- FakeHIDDevice for manager tests ---
-
-class ManagerFakeDevice : public IHIDDevice
-{
-public:
-    void QueueRead(vector<uint8_t> packet)
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        m_aReads.push(std::move(packet));
-    }
-
-    int Read(uint8_t *buf, size_t len) override
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        if(m_iFailAfterReads > 0)
-        {
-            m_iReadCount++;
-            if(m_iReadCount > m_iFailAfterReads)
-                return -1;
-        }
-        if(m_aReads.empty())
-            return 0;
-        auto &pkt = m_aReads.front();
-        size_t n = min(len, pkt.size());
-        memcpy(buf, pkt.data(), n);
-        m_aReads.pop();
-        return static_cast<int>(n);
-    }
-
-    int Write(const uint8_t *buf, size_t len) override
-    {
-        {
-            lock_guard<mutex> lock(m_Mutex);
-            if(m_bFailWrites)
-                return -1;
-        }
-        if(m_bCaptureWrites)
-        {
-            lock_guard<mutex> lock(m_Mutex);
-            m_aCapturedWrites.emplace_back(buf, buf + len);
-        }
-        // Check if this is an activation command ("G" or "g\n")
-        // HID packet format: [report_id=5][flags][size][payload...]
-        if(len >= 4 && buf[0] == HID_REPORT_COMMAND && buf[2] >= 1)
-        {
-            char cmd = static_cast<char>(buf[3]);
-            if(cmd == 'G' || cmd == 'g')
-            {
-                lock_guard<mutex> lock(m_Mutex);
-                if(!m_ConfigResponse.empty())
-                    m_aReads.push(m_ConfigResponse);
-            }
-        }
-        return static_cast<int>(len);
-    }
-
-    void Close() override {}
-
-    void SetConfigResponse(vector<uint8_t> resp)
-    {
-        m_ConfigResponse = std::move(resp);
-    }
-
-    void SetFailReadsAfterCount(int count)
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        m_iFailAfterReads = count;
-        m_iReadCount = 0;
-    }
-
-    void SetFailWrites(bool b)
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        m_bFailWrites = b;
-    }
-
-    void SetCaptureWrites(bool b) { m_bCaptureWrites = b; }
-
-    void ClearCapturedWrites()
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        m_aCapturedWrites.clear();
-    }
-
-    int GetCapturedWriteCount()
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        return static_cast<int>(m_aCapturedWrites.size());
-    }
-
-    vector<vector<uint8_t>> GetCapturedWrites()
-    {
-        lock_guard<mutex> lock(m_Mutex);
-        return m_aCapturedWrites;
-    }
-
-private:
-    mutex m_Mutex;
-    queue<vector<uint8_t>> m_aReads;
-    vector<uint8_t> m_ConfigResponse;
-    int m_iFailAfterReads = 0;
-    int m_iReadCount = 0;
-    bool m_bFailWrites = false;
-    bool m_bCaptureWrites = false;
-    vector<vector<uint8_t>> m_aCapturedWrites;
-};
-
-// --- Helper to build device info response ---
-
-static vector<uint8_t> MakeDeviceInfoResponse(char player, uint16_t fwVersion)
-{
-    // Report 6 with DEVICE_INFO flag
-    // Payload: data_info_packet = cmd(1) + packet_size(1) + player(1) + unused(1) + serial(16) + fw(2) + unused(1)
-    vector<uint8_t> payload(23, 0);
-    payload[0] = 'I';
-    payload[1] = 23;
-    payload[2] = static_cast<uint8_t>(player);
-    // serial bytes: use distinct values so we can verify
-    for(int i = 0; i < 16; i++)
-        payload[4 + i] = static_cast<uint8_t>(player == '0' ? 0xA0 + i : 0xB0 + i);
-    memcpy(&payload[20], &fwVersion, 2);
-
-    vector<uint8_t> pkt;
-    pkt.push_back(HID_REPORT_DATA);  // report ID
-    pkt.push_back(PACKET_FLAG_DEVICE_INFO);
-    pkt.push_back(static_cast<uint8_t>(payload.size()));
-    pkt.insert(pkt.end(), payload.begin(), payload.end());
-    return pkt;
-}
-
-// --- Helper to build a config response (needed for "fully connected") ---
-// The device sends a 'G' config packet after activation.
-// Format: START|END|HOST_CMD_FINISHED, payload starts with 'G' + size + config data
-
-static vector<uint8_t> MakeConfigResponse()
-{
-    // Config payload: 'G' + size byte + config data
-    // Must fit in 61 bytes (64 byte HID packet - 3 byte header)
-    vector<uint8_t> payload;
-    payload.push_back('G');
-    payload.push_back(40);  // size of config data (small enough to fit)
-    payload.resize(2 + 40, 0);  // zero-filled config
-
-    vector<uint8_t> pkt;
-    pkt.push_back(HID_REPORT_DATA);
-    pkt.push_back(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED);
-    pkt.push_back(static_cast<uint8_t>(payload.size()));
-    pkt.insert(pkt.end(), payload.begin(), payload.end());
-    return pkt;
-}
-
-// --- FakeHIDEnumerator ---
-
-class FakeHIDEnumerator : public IHIDEnumerator
-{
-public:
-    void Init() override {}
-    void Exit() override {}
-
-    void AddDevice(const string &path, ManagerFakeDevice *pDevice)
-    {
-        m_aDevices.push_back({path, pDevice});
-    }
-
-    vector<HIDDeviceInfo> Enumerate(uint16_t, uint16_t) override
-    {
-        vector<HIDDeviceInfo> results;
-        for(const auto &d : m_aDevices)
-        {
-            HIDDeviceInfo info;
-            info.sPath = d.sPath;
-            info.sProduct = SMX_USB_PRODUCT_STRING;
-            results.push_back(info);
-        }
-        return results;
-    }
-
-    unique_ptr<IHIDDevice> Open(const string &path) override
-    {
-        for(auto &d : m_aDevices)
-        {
-            if(d.sPath == path && !d.bOpened)
-            {
-                d.bOpened = true;
-                // Return a non-owning wrapper since we need to keep the pointer for queuing reads
-                return unique_ptr<IHIDDevice>(new DeviceWrapper(d.pDevice));
-            }
-        }
-        return nullptr;
-    }
-
-private:
-    // Wrapper that delegates to the shared ManagerFakeDevice without owning it
-    class DeviceWrapper : public IHIDDevice
-    {
-    public:
-        explicit DeviceWrapper(ManagerFakeDevice *p) : m_p(p) {}
-        int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
-        int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
-        void Close() override {}
-    private:
-        ManagerFakeDevice *m_p;
-    };
-
-    struct DeviceEntry {
-        string sPath;
-        ManagerFakeDevice *pDevice;
-        bool bOpened = false;
-    };
-    vector<DeviceEntry> m_aDevices;
-};
-
-// --- Helper: wait for a condition with timeout ---
-
-static bool WaitFor(function<bool()> cond, int timeoutMs = 2000)
-{
-    auto deadline = chrono::steady_clock::now() + chrono::milliseconds(timeoutMs);
-    while(!cond())
-    {
-        if(chrono::steady_clock::now() > deadline)
-            return false;
-        this_thread::sleep_for(chrono::milliseconds(10));
-    }
-    return true;
-}
+using namespace SMXTestHelpers;
 
 // =========================================================================
 // Device discovery and player ordering tests
 // =========================================================================
 
 TEST_CASE("Single P1 device is discovered and connected") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
@@ -283,7 +42,7 @@ TEST_CASE("Single P1 device is discovered and connected") {
 }
 
 TEST_CASE("Single P2 device is placed in slot 1") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
@@ -312,8 +71,8 @@ TEST_CASE("Single P2 device is placed in slot 1") {
 }
 
 TEST_CASE("Two devices are ordered P1=slot0, P2=slot1") {
-    auto pFakeP1 = new ManagerFakeDevice();
-    auto pFakeP2 = new ManagerFakeDevice();
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     // Add P2 first to test that ordering corrects it
     pEnum->AddDevice("/dev/hidraw0", pFakeP2);
@@ -346,7 +105,7 @@ TEST_CASE("Two devices are ordered P1=slot0, P2=slot1") {
 // =========================================================================
 
 TEST_CASE("Device disconnect fires callback and clears slot") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
@@ -393,8 +152,8 @@ TEST_CASE("Device disconnect fires callback and clears slot") {
 // =========================================================================
 
 TEST_CASE("Duplicate player jumpers: both P1 are assigned to slots without swap") {
-    auto pFakeA = new ManagerFakeDevice();
-    auto pFakeB = new ManagerFakeDevice();
+    auto pFakeA = new FakeDevice();
+    auto pFakeB = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeA);
     pEnum->AddDevice("/dev/hidraw1", pFakeB);
@@ -428,7 +187,7 @@ TEST_CASE("Duplicate player jumpers: both P1 are assigned to slots without swap"
 // =========================================================================
 
 TEST_CASE("SMX_GetInputState returns panel state through full stack") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
@@ -466,7 +225,7 @@ TEST_CASE("SMX_GetInputState returns panel state through full stack") {
 // =========================================================================
 
 TEST_CASE("SMX_SetSerialNumbers sends 's' command with 16-byte serial") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     pFakeDevice->SetCaptureWrites(true);
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
@@ -563,7 +322,7 @@ TEST_CASE("SMX_GetInfo with invalid pad index does not crash") {
 // =========================================================================
 
 TEST_CASE("Device with firmware >= 5 uses 'G' (new config format)") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
@@ -591,7 +350,7 @@ TEST_CASE("Device with firmware >= 5 uses 'G' (new config format)") {
 }
 
 TEST_CASE("Device with firmware < 5 uses 'g' (old config format) and converts") {
-    auto pFakeDevice = new ManagerFakeDevice();
+    auto pFakeDevice = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();
     pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
 
