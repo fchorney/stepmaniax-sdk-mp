@@ -126,6 +126,14 @@ SMX_API uint16_t SMX_GetInputState(int pad);
 /// Note: Devices without a serial number show a hex string of all zeros or all F's.
 SMX_API void SMX_SetSerialNumbers();
 
+/// Resets a pad to its factory default configuration.
+/// This sends a reset command to the device and re-reads the resulting configuration.
+/// The operation is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire
+/// when the new configuration has been read back from the device.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_FactoryReset(int pad);
+
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().
 ///

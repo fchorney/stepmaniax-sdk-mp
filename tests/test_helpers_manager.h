@@ -68,16 +68,27 @@ public:
             lock_guard<mutex> lock(m_Mutex);
             m_aCapturedWrites.emplace_back(buf, buf + len);
         }
-        // Auto-respond to activation command ("G" or "g\n") with config
+        // Auto-respond to commands with HOST_CMD_FINISHED so the command queue advances.
         // HID packet format: [report_id=5][flags][size][payload...]
         if(len >= 4 && buf[0] == HID_REPORT_COMMAND && buf[2] >= 1)
         {
             char cmd = static_cast<char>(buf[3]);
             if(cmd == 'G' || cmd == 'g')
             {
+                // Config read: respond with the config packet (includes HOST_CMD_FINISHED)
                 lock_guard<mutex> lock(m_Mutex);
                 if(!m_ConfigResponse.empty())
                     m_aReads.push(m_ConfigResponse);
+            }
+            else
+            {
+                // All other commands: send a minimal HOST_CMD_FINISHED response
+                lock_guard<mutex> lock(m_Mutex);
+                vector<uint8_t> ack;
+                ack.push_back(HID_REPORT_DATA);
+                ack.push_back(PACKET_FLAG_HOST_CMD_FINISHED);
+                ack.push_back(0); // zero payload
+                m_aReads.push(ack);
             }
         }
         return static_cast<int>(len);

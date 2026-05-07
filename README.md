@@ -12,6 +12,39 @@ A minimal, cross-platform SDK for StepManiaX dance pads. Supports device discove
 - Reports firmware version
 - Cross-platform: Linux, macOS (Intel & Apple Silicon), Windows
 
+## Feature status
+
+Comparison of features between this SDK and the original StepManiaX SDK.
+
+### Implemented
+
+| Feature | API | Notes |
+|---------|-----|-------|
+| Device discovery & connection | `SMX_Start`, `SMX_Stop` | Auto-discovers up to 2 pads |
+| Log callback | `SMX_SetLogCallback` | |
+| Device info | `SMX_GetInfo` | Connection status, serial, firmware version, player ID |
+| Input state | `SMX_GetInputState` | Panel press/release bitmask |
+| Serial number assignment | `SMX_SetSerialNumbers` | Writes random serial to devices without one |
+| SDK version | `SMX_Version` | |
+| Polling rate configuration | `SMX_SetPollingRate` | *New* — not in original SDK |
+| Input state callback mode | `SMX_SetInputStateMode` | *New* — fire on every packet or only on change |
+| Monotonic time | `SMX_GetMonotonicTime` | *New* — high-resolution elapsed time |
+| Factory reset | `SMX_FactoryReset` | Reset pad to default configuration |
+
+### Not yet implemented
+
+| Feature | Original API | Complexity | Description |
+|---------|-------------|------------|-------------|
+| Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Medium | Read/write pad thresholds, lighting config, sensor settings. Config is already read internally but not exposed. |
+| Force recalibration | `SMX_ForceRecalibration` | Low | Trigger immediate sensor recalibration |
+| Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
+| Panel test mode | `SMX_SetPanelTestMode` | Low | Panel-side diagnostic lighting (pressure test) |
+| Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
+| Re-enable auto lights | `SMX_ReenableAutoLights` | Low | Return panels to automatic step lighting |
+| Platform LED strip | `SMX_SetPlatformLights` | Medium | Control the platform edge LED strip (firmware v4+) |
+| GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
+| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
+
 ## Threading architecture
 
 This SDK uses a two-thread design that differs from the original StepManiaX SDK. The original SDK uses a single I/O thread for all USB communication. This version separates input state polling into its own dedicated thread to minimize input latency.

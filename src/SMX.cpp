@@ -290,6 +290,19 @@ public:
         return m_Connection.GetInputState();
     }
 
+    /// Resets the device to factory default configuration.
+    /// Sends the factory reset command, then re-reads the config from the device.
+    void FactoryReset()
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_Connection.IsConnected())
+            return;
+
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        m_Connection.SendCommand("f\n");
+        m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
+    }
+
     /// Fires the Connected callback for this device using the given slot index.
     /// Called by the manager after device ordering is corrected.
     void FireConnectedCallback(int pad) const
@@ -763,6 +776,16 @@ SMX_API uint16_t SMX_GetInputState(const int pad)
 SMX_API void SMX_SetSerialNumbers()
 {
     if(g_pSMX) g_pSMX->SetSerialNumbers();
+}
+
+/// Resets a pad to its factory default configuration.
+/// The operation is asynchronous; the ConfigUpdated callback will fire when complete.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_FactoryReset(const int pad)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->FactoryReset();
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
