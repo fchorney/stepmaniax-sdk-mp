@@ -4,6 +4,7 @@
 #include "SMXHIDInterface.h"
 #include "SMXHIDRecorder.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -116,7 +117,9 @@ TEST_CASE("Real hardware: device discovery and connection")
 
     // Read input state (just verify it doesn't crash)
     uint16_t iState = SMX_GetInputState(iPad);
-    MESSAGE("Input state: 0x", std::hex, iState);
+    char sHex[8];
+    snprintf(sHex, sizeof(sHex), "%04x", iState);
+    MESSAGE("Input state: 0x", sHex);
 
     // Let it run briefly to capture some traffic
     this_thread::sleep_for(chrono::milliseconds(500));
@@ -137,39 +140,40 @@ TEST_CASE("Real hardware: input state reads")
         return;
     }
 
-    bool bConnected = false;
-    int iInputCount = 0;
+    struct CallbackData {
+        atomic<bool> bConnected{false};
+        atomic<int> iPacketCount{0};
+    } data;
 
     SMX_SetInputStateMode(true);  // fire on every packet
     SMX_Start(
         [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CallbackData *>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                d->bConnected = true;
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_InputState))
+                d->iPacketCount.fetch_add(1, memory_order_relaxed);
         },
-        &bConnected);
+        &data);
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return data.bConnected.load(); }, 5000));
 
-    // Find which slot has the connected device
-    int iPad = 0;
-    for(int i = 0; i < 2; i++)
-    {
-        SMXInfo tmp;
-        SMX_GetInfo(i, &tmp);
-        if(tmp.m_bConnected) { iPad = i; break; }
-    }
+    // Measure USB input packet rate for 1 second at default polling rate (1000us)
+    data.iPacketCount = 0;
+    this_thread::sleep_for(chrono::seconds(1));
+    int iPacketsDefault = data.iPacketCount.load();
 
-    // Collect input state for 1 second
-    auto start = chrono::steady_clock::now();
-    while(chrono::steady_clock::now() - start < chrono::seconds(1))
-    {
-        SMX_GetInputState(iPad);
-        iInputCount++;
-        this_thread::sleep_for(chrono::milliseconds(1));
-    }
+    MESSAGE("Default (1000us): ", iPacketsDefault, " input packets/sec");
+    CHECK(iPacketsDefault > 0);
 
-    MESSAGE("Polled input state ", iInputCount, " times in 1 second");
-    CHECK(iInputCount > 0);
+    // Measure again at 500us polling rate
+    SMX_SetPollingRate(50, 500);
+    data.iPacketCount = 0;
+    this_thread::sleep_for(chrono::seconds(1));
+    int iPacketsFast = data.iPacketCount.load();
+
+    MESSAGE("Fast (500us): ", iPacketsFast, " input packets/sec");
+    CHECK(iPacketsFast > 0);
 
     SMX_Stop();
 }
