@@ -663,6 +663,11 @@ private:
             SMXDevice temp(std::move(m_Devices[0]));
             m_Devices[0] = std::move(m_Devices[1]);
             m_Devices[1] = std::move(temp);
+
+            // Re-bind callbacks after swap since the captured 'this' pointers
+            // in the lambdas now point to the wrong SMXDevice objects.
+            m_Devices[0].SetConnectionCallbacks();
+            m_Devices[1].SetConnectionCallbacks();
         }
         return bSwap;
     }
