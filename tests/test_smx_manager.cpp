@@ -535,3 +535,65 @@ TEST_CASE("SMX_FactoryReset on disconnected pad does nothing") {
 
     SMX_Stop();
 }
+
+// =========================================================================
+// SMX_ForceRecalibration command format
+// =========================================================================
+
+TEST_CASE("SMX_ForceRecalibration sends 'C' command") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_ForceRecalibration(0);
+
+    bool bGotWrite = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotWrite);
+
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundCalibrationCmd = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND)
+        {
+            uint8_t payloadSize = w[2];
+            if(payloadSize >= 2 && w[3] == 'C' && w[4] == '\n')
+            {
+                bFoundCalibrationCmd = true;
+                break;
+            }
+        }
+    }
+    CHECK(bFoundCalibrationCmd);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_ForceRecalibration on disconnected pad does nothing") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_ForceRecalibration(0);
+    SMX_ForceRecalibration(1);
+
+    SMX_Stop();
+}

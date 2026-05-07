@@ -303,6 +303,16 @@ public:
         m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
     }
 
+    /// Triggers an immediate sensor recalibration on this device.
+    void ForceRecalibration()
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_Connection.IsConnected())
+            return;
+
+        m_Connection.SendCommand("C\n");
+    }
+
     /// Fires the Connected callback for this device using the given slot index.
     /// Called by the manager after device ordering is corrected.
     void FireConnectedCallback(int pad) const
@@ -786,6 +796,15 @@ SMX_API void SMX_FactoryReset(const int pad)
     if(!g_pSMX) return;
     auto *dev = g_pSMX->GetDevice(pad);
     if(dev) dev->FactoryReset();
+}
+
+/// Triggers an immediate sensor recalibration on the specified pad.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_ForceRecalibration(const int pad)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->ForceRecalibration();
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)

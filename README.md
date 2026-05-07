@@ -30,13 +30,13 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Input state callback mode | `SMX_SetInputStateMode` | *New* — fire on every packet or only on change |
 | Monotonic time | `SMX_GetMonotonicTime` | *New* — high-resolution elapsed time |
 | Factory reset | `SMX_FactoryReset` | Reset pad to default configuration |
+| Force recalibration | `SMX_ForceRecalibration` | Trigger immediate sensor recalibration |
 
 ### Not yet implemented
 
 | Feature | Original API | Complexity | Description |
 |---------|-------------|------------|-------------|
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Medium | Read/write pad thresholds, lighting config, sensor settings. Config is already read internally but not exposed. |
-| Force recalibration | `SMX_ForceRecalibration` | Low | Trigger immediate sensor recalibration |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
 | Panel test mode | `SMX_SetPanelTestMode` | Low | Panel-side diagnostic lighting (pressure test) |
 | Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |

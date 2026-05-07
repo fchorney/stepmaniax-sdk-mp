@@ -134,6 +134,13 @@ SMX_API void SMX_SetSerialNumbers();
 /// @param pad Device index (0 for Player 1, 1 for Player 2).
 SMX_API void SMX_FactoryReset(int pad);
 
+/// Requests an immediate sensor recalibration on the specified pad.
+/// This is normally not necessary, but can be helpful for diagnostics.
+/// The operation is asynchronous and completes in the background.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_ForceRecalibration(int pad);
+
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().
 ///
