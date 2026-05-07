@@ -107,6 +107,7 @@ if(BUILD_TESTS)
         tests/test_smx_manager.cpp
         tests/test_config_packet.cpp
         tests/test_helpers.cpp
+        tests/test_move_semantics.cpp
         tests/test_replay.cpp
         src/SMXConfigPacket.cpp
         src/SMXDeviceConnection.cpp

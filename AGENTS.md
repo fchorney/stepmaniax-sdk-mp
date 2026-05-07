@@ -61,6 +61,7 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_smx_manager.cpp         # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp       # Config format conversion tests
 │   ├── test_helpers.cpp             # Utility function tests
+│   ├── test_move_semantics.cpp     # Move semantics / pad swap regression tests
 │   └── test_integration.cpp         # Integration tests (real hardware)
 ├── sample/sample.cpp                # Sample application
 ├── original_sdk/                    # Original SDK (git submodule, reference only)
