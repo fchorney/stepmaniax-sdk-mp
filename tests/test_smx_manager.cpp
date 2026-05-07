@@ -597,3 +597,76 @@ TEST_CASE("SMX_ForceRecalibration on disconnected pad does nothing") {
 
     SMX_Stop();
 }
+
+// =========================================================================
+// SMX_ReenableAutoLights command format
+// =========================================================================
+
+TEST_CASE("SMX_ReenableAutoLights sends 'S 1' to both pads") {
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
+    pFakeP1->SetCaptureWrites(true);
+    pFakeP2->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeP1);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP2);
+
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponse(MakeConfigResponse());
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBothConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBothConnected);
+
+    pFakeP1->ClearCapturedWrites();
+    pFakeP2->ClearCapturedWrites();
+    SMX_ReenableAutoLights();
+
+    bool bGotP1Write = WaitFor([&]() {
+        return pFakeP1->GetCapturedWriteCount() > 0;
+    });
+    bool bGotP2Write = WaitFor([&]() {
+        return pFakeP2->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotP1Write);
+    REQUIRE(bGotP2Write);
+
+    // Check both pads received "S 1\n"
+    auto checkAutoLightsCmd = [](const vector<vector<uint8_t>> &writes) {
+        for(const auto &w : writes)
+        {
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND)
+            {
+                uint8_t payloadSize = w[2];
+                if(payloadSize >= 4 && w[3] == 'S' && w[4] == ' ' && w[5] == '1' && w[6] == '\n')
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    CHECK(checkAutoLightsCmd(pFakeP1->GetCapturedWrites()));
+    CHECK(checkAutoLightsCmd(pFakeP2->GetCapturedWrites()));
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_ReenableAutoLights with no devices does not crash") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_ReenableAutoLights();
+
+    SMX_Stop();
+}

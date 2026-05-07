@@ -516,6 +516,13 @@ public:
         m_iUSBPollingSleepUs.store(iUSBPollingUs);
     }
 
+    void ReenableAutoLights()
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        for(auto & m_Device : m_Devices)
+            m_Device.SendCommand(string("S 1\n", 4));
+    }
+
     void SetInputStateMode(bool bAlwaysFire)
     {
         for(auto & m_Device : m_Devices)
@@ -805,6 +812,12 @@ SMX_API void SMX_ForceRecalibration(const int pad)
     if(!g_pSMX) return;
     auto *dev = g_pSMX->GetDevice(pad);
     if(dev) dev->ForceRecalibration();
+}
+
+/// Re-enables automatic panel lighting on both pads.
+SMX_API void SMX_ReenableAutoLights()
+{
+    if(g_pSMX) g_pSMX->ReenableAutoLights();
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)

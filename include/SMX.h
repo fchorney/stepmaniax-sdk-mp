@@ -141,6 +141,12 @@ SMX_API void SMX_FactoryReset(int pad);
 /// @param pad Device index (0 for Player 1, 1 for Player 2).
 SMX_API void SMX_ForceRecalibration(int pad);
 
+/// Re-enables automatic panel lighting on both pads.
+/// By default, panels light automatically when stepped on. If an application sends
+/// lighting commands, auto-lighting is disabled. Call this to immediately re-enable it
+/// without waiting for the timeout period to elapse.
+SMX_API void SMX_ReenableAutoLights();
+
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().
 ///
