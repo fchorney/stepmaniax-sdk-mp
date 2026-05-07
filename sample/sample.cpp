@@ -60,10 +60,13 @@ int main(int argc, char *argv[])
     SMX_Start(OnStateChanged, nullptr);
 
     bool bAllPackets = false;
+    bool bTestMode = false;
     for(int i = 1; i < argc; i++)
     {
         if(std::string(argv[i]) == "--all-packets")
             bAllPackets = true;
+        else if(std::string(argv[i]) == "--test-mode")
+            bTestMode = true;
     }
 
     if(argc >= 2 && argv[1][0] != '-')
@@ -80,13 +83,22 @@ int main(int argc, char *argv[])
         printf("Input state mode: fire on every Report 3 packet\n");
     }
 
+    if(bTestMode)
+    {
+        SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+        printf("Panel test mode: pressure test enabled\n");
+    }
+
     printf("Scanning for StepManiaX devices... Press Ctrl+C to quit.\n");
-    printf("Usage: %s [main_thread_ms] [usb_polling_us] [--all-packets]\n", argv[0]);
+    printf("Usage: %s [main_thread_ms] [usb_polling_us] [--all-packets] [--test-mode]\n", argv[0]);
 
     while(!g_shouldExit)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+
+    if(bTestMode)
+        SMX_SetPanelTestMode(PanelTestMode_Off);
 
     SMX_Stop();
     return 0;

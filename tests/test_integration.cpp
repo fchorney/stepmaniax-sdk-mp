@@ -29,8 +29,11 @@ extern void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser,
 //   make smx-integration-tests
 //   ./smx-integration-tests
 //
-// To record HID traffic for regression tests:
-//   SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
+// To record HID traffic for replay regression tests:
+//   SMX_CAPTURE_DIR=capture ./smx-integration-tests
+//
+// This records into p1_solo/, p2_solo/, or both_pads/ subdirectories
+// based on detected hardware. These captures are used by test_replay.cpp.
 
 // --- Helper: get capture directory from environment ---
 
@@ -38,6 +41,18 @@ static string GetCaptureDir()
 {
     const char *pDir = getenv("SMX_CAPTURE_DIR");
     return pDir ? string(pDir) : string();
+}
+
+// --- Helper: determine capture subdirectory based on connected hardware ---
+
+static string GetCaptureSubDir(const vector<HIDDeviceInfo> &devices)
+{
+    // We need to connect to determine P1/P2, but for directory naming
+    // we use device count: 1 device = solo, 2 = both_pads.
+    // The actual P1/P2 determination happens after connection.
+    if(devices.size() >= 2)
+        return "both_pads";
+    return "";  // determined after connection
 }
 
 // --- Helper: wait for condition with timeout ---
@@ -54,9 +69,9 @@ static bool WaitFor(function<bool()> cond, int iTimeoutMs = 5000)
     return true;
 }
 
-TEST_CASE("Real hardware: device discovery and connection")
+TEST_CASE("Real hardware: comprehensive command test")
 {
-    // Check if hardware is present by enumerating
+    // Check if hardware is present
     auto pEnum = CreateHIDAPIEnumerator();
     pEnum->Init();
     auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
@@ -68,63 +83,147 @@ TEST_CASE("Real hardware: device discovery and connection")
         return;
     }
 
-    MESSAGE("Found ", devices.size(), " SMX device(s)");
+    int iDeviceCount = static_cast<int>(devices.size());
+    MESSAGE("Found ", iDeviceCount, " SMX device(s)");
 
-    // Optionally wrap with recording enumerator
+    // Determine capture subdirectory. For a single device, we need to connect
+    // first to know if it's P1 or P2, so we defer directory creation.
     string sCaptureDir = GetCaptureDir();
+    string sSubDir;
+    if(!sCaptureDir.empty() && iDeviceCount >= 2)
+        sSubDir = sCaptureDir + "/both_pads";
+
+    // Create enumerator (optionally recording)
     unique_ptr<IHIDEnumerator> pEnumerator;
-    if(!sCaptureDir.empty())
+    if(!sSubDir.empty())
     {
-        MESSAGE("Recording HID traffic to: ", sCaptureDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sCaptureDir));
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
     }
-    else
+    else if(sCaptureDir.empty())
     {
         pEnumerator = CreateHIDAPIEnumerator();
     }
+    else
+    {
+        // Single device — we'll determine P1/P2 after connection.
+        // Use a non-recording enumerator first to detect, then restart with recording.
+        // Actually, just connect without recording, check P1/P2, stop, then reconnect with recording.
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
 
-    // Start SDK with the enumerator
-    atomic<int> iConnectedCallbacks{0};
+    // For single-device + capture: detect P1/P2 first, then re-run with recording
+    if(!sCaptureDir.empty() && iDeviceCount == 1 && sSubDir.empty())
+    {
+        atomic<int> iConnected{0};
+        SMX_StartWithEnumerator(
+            [](int, SMXUpdateCallbackReason reason, void *pUser) {
+                if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                    static_cast<atomic<int>*>(pUser)->fetch_add(1);
+            },
+            &iConnected, std::move(pEnumerator));
 
+        REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
+
+        // Determine P1 or P2
+        SMXInfo info0, info1;
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        bool bIsP2 = info1.m_bConnected && info1.m_bIsPlayer2;
+        SMX_Stop();
+
+        sSubDir = sCaptureDir + (bIsP2 ? "/p2_solo" : "/p1_solo");
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+
+    // Start SDK
+    atomic<int> iConnected{0};
     SMX_StartWithEnumerator(
-        [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
                 static_cast<atomic<int>*>(pUser)->fetch_add(1);
         },
-        &iConnectedCallbacks, std::move(pEnumerator));
+        &iConnected, std::move(pEnumerator));
 
-    // Wait for all detected devices to connect
-    int iExpected = static_cast<int>(devices.size());
-    REQUIRE(WaitFor([&]() { return iConnectedCallbacks.load() >= iExpected; }, 5000));
-
-    // Check all connected pads
-    // Brief delay to allow USB polling thread to receive fresh input state
-    // after device ordering is finalized.
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
     this_thread::sleep_for(chrono::milliseconds(200));
 
-    int iConnectedCount = 0;
-    for(int i = 0; i < 2; i++)
-    {
-        SMXInfo info;
-        SMX_GetInfo(i, &info);
-        if(!info.m_bConnected)
-            continue;
-
-        iConnectedCount++;
-        CHECK(info.m_iFirmwareVersion > 0);
-        MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
-                " p2=", info.m_bIsPlayer2,
-                " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-
-        uint16_t iState = SMX_GetInputState(i);
-        char sHex[8];
-        snprintf(sHex, sizeof(sHex), "%04x", iState);
-        MESSAGE("Slot ", i, " input state: 0x", sHex);
+    // --- Verify connection ---
+    SUBCASE("connection") {
+        int iConnectedCount = 0;
+        for(int i = 0; i < 2; i++)
+        {
+            SMXInfo info;
+            SMX_GetInfo(i, &info);
+            if(!info.m_bConnected)
+                continue;
+            iConnectedCount++;
+            CHECK(info.m_iFirmwareVersion > 0);
+            MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
+                    " p2=", info.m_bIsPlayer2,
+                    " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
+        }
+        CHECK(iConnectedCount == iDeviceCount);
     }
-    CHECK(iConnectedCount == static_cast<int>(devices.size()));
 
-    // Let it run briefly to capture some traffic
-    this_thread::sleep_for(chrono::milliseconds(500));
+    // --- Force recalibration ---
+    SUBCASE("force recalibration") {
+        for(int i = 0; i < 2; i++)
+        {
+            SMXInfo info;
+            SMX_GetInfo(i, &info);
+            if(info.m_bConnected)
+            {
+                SMX_ForceRecalibration(i);
+                MESSAGE("Sent force recalibration to pad ", i);
+            }
+        }
+        this_thread::sleep_for(chrono::milliseconds(500));
+
+        // Verify still connected
+        for(int i = 0; i < 2; i++)
+        {
+            SMXInfo info;
+            SMX_GetInfo(i, &info);
+            if(info.m_bConnected)
+                MESSAGE("Pad ", i, " still connected after recalibration");
+        }
+    }
+
+    // --- Panel test mode ---
+    SUBCASE("panel test mode") {
+        SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+        MESSAGE("Enabled pressure test mode");
+        this_thread::sleep_for(chrono::seconds(2));
+
+        for(int i = 0; i < 2; i++)
+        {
+            SMXInfo info;
+            SMX_GetInfo(i, &info);
+            if(info.m_bConnected)
+                MESSAGE("Pad ", i, " still connected during test mode");
+        }
+
+        SMX_SetPanelTestMode(PanelTestMode_Off);
+        MESSAGE("Disabled panel test mode");
+        this_thread::sleep_for(chrono::milliseconds(200));
+    }
+
+    // --- Re-enable auto lights ---
+    SUBCASE("re-enable auto lights") {
+        SMX_ReenableAutoLights();
+        MESSAGE("Sent re-enable auto lights");
+        this_thread::sleep_for(chrono::milliseconds(500));
+
+        for(int i = 0; i < 2; i++)
+        {
+            SMXInfo info;
+            SMX_GetInfo(i, &info);
+            if(info.m_bConnected)
+                MESSAGE("Pad ", i, " still connected after re-enable auto lights");
+        }
+    }
 
     SMX_Stop();
 }
@@ -166,9 +265,6 @@ TEST_CASE("Real hardware: input state reads")
     MESSAGE("Connected ", data.iConnected.load(), " pad(s)");
 
     // Measure USB input packet rate for 1 second at default polling rate (1000us).
-    // Observed behavior: the device sends ~10 Report 3 packets/sec at idle (likely a
-    // heartbeat) and ~50/sec during active panel input (one per state transition).
-    // The rate is determined by the device firmware, not the SDK polling interval.
     data.iPacketCount = 0;
     this_thread::sleep_for(chrono::seconds(1));
     int iPacketsDefault = data.iPacketCount.load();
