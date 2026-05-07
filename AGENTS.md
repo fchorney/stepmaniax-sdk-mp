@@ -133,3 +133,4 @@ See README.md for platform-specific instructions and all build options.
 4. **Cross-platform.** All code must build and work on Linux, macOS (Intel + Apple Silicon), and Windows. Use standard C++14 and hidapi — no platform-specific code in the core logic.
 5. **Reference the original SDK.** When implementing new features, consult `original_sdk/` for protocol details and expected behavior, but don't copy its architecture decisions blindly.
 6. **Keep the README.md and AGENTS.md up to date.** When changing code, make sure to update the README.md and AGENTS.md if necessary.
+7. **Always write tests.** Every bug fix, new feature, or code change must be accompanied by corresponding tests. When fixing a bug, add a test that reproduces the bug first. When adding or modifying functionality, add or update tests to cover the new behavior. Tests are not optional.
