@@ -96,15 +96,26 @@ TEST_CASE("Real hardware: device discovery and connection")
     // Wait for connection
     REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
 
+    // Find which slot has the connected device (P2 solo goes to slot 1)
+    int iPad = -1;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo tmp;
+        SMX_GetInfo(i, &tmp);
+        if(tmp.m_bConnected) { iPad = i; break; }
+    }
+    REQUIRE(iPad >= 0);
+
     SMXInfo info;
-    SMX_GetInfo(0, &info);
+    SMX_GetInfo(iPad, &info);
     CHECK(info.m_bConnected);
     CHECK(info.m_iFirmwareVersion > 0);
-    MESSAGE("Connected: fw=", info.m_iFirmwareVersion,
+    MESSAGE("Connected on slot ", iPad, ": fw=", info.m_iFirmwareVersion,
+            " p2=", info.m_bIsPlayer2,
             " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
 
     // Read input state (just verify it doesn't crash)
-    uint16_t iState = SMX_GetInputState(0);
+    uint16_t iState = SMX_GetInputState(iPad);
     MESSAGE("Input state: 0x", std::hex, iState);
 
     // Let it run briefly to capture some traffic
@@ -139,11 +150,20 @@ TEST_CASE("Real hardware: input state reads")
 
     REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
 
+    // Find which slot has the connected device
+    int iPad = 0;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo tmp;
+        SMX_GetInfo(i, &tmp);
+        if(tmp.m_bConnected) { iPad = i; break; }
+    }
+
     // Collect input state for 1 second
     auto start = chrono::steady_clock::now();
     while(chrono::steady_clock::now() - start < chrono::seconds(1))
     {
-        SMX_GetInputState(0);
+        SMX_GetInputState(iPad);
         iInputCount++;
         this_thread::sleep_for(chrono::milliseconds(1));
     }

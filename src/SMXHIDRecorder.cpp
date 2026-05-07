@@ -95,29 +95,46 @@ unique_ptr<IHIDDevice> RecordingHIDEnumerator::Open(const string &path)
 ReplayHIDDevice::ReplayHIDDevice(const string &sInputPath)
 {
     auto records = LoadHIDCapture(sInputPath);
+
+    // Group reads into batches separated by writes.
+    // Batch 0 = reads before first write, batch 1 = reads after first write, etc.
+    m_aReadBatches.emplace_back();  // batch 0
     for(auto &rec : records)
     {
         if(rec.cType == 'R')
-            m_aReads.push(std::move(rec.aData));
+            m_aReadBatches.back().push(std::move(rec.aData));
         else if(rec.cType == 'W')
+        {
             m_aExpectedWrites.push_back(std::move(rec.aData));
+            m_aReadBatches.emplace_back();  // start new batch
+        }
     }
 }
 
 int ReplayHIDDevice::Read(uint8_t *buf, size_t len)
 {
-    if(m_aReads.empty())
-        return 0;
-    auto &pkt = m_aReads.front();
-    size_t n = min(len, pkt.size());
-    memcpy(buf, pkt.data(), n);
-    m_aReads.pop();
-    return static_cast<int>(n);
+    lock_guard<mutex> lock(m_Mutex);
+
+    // Return reads from all batches up to and including the current write count.
+    for(int i = 0; i <= m_iWriteCount && i < static_cast<int>(m_aReadBatches.size()); i++)
+    {
+        if(!m_aReadBatches[i].empty())
+        {
+            auto &pkt = m_aReadBatches[i].front();
+            size_t n = min(len, pkt.size());
+            memcpy(buf, pkt.data(), n);
+            m_aReadBatches[i].pop();
+            return static_cast<int>(n);
+        }
+    }
+    return 0;
 }
 
 int ReplayHIDDevice::Write(const uint8_t *buf, size_t len)
 {
+    lock_guard<mutex> lock(m_Mutex);
     m_aActualWrites.emplace_back(buf, buf + len);
+    m_iWriteCount++;
     return static_cast<int>(len);
 }
 

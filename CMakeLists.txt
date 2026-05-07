@@ -107,13 +107,17 @@ if(BUILD_TESTS)
         tests/test_smx_manager.cpp
         tests/test_config_packet.cpp
         tests/test_helpers.cpp
+        tests/test_replay.cpp
         src/SMXConfigPacket.cpp
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
         src/SMX.cpp
     )
-    target_compile_definitions(smx-tests PRIVATE SMX_EXPORTS)
+    target_compile_definitions(smx-tests PRIVATE
+        SMX_EXPORTS
+        CAPTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/capture"
+    )
     target_include_directories(smx-tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src

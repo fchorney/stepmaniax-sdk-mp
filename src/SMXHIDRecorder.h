@@ -74,6 +74,10 @@ private:
 };
 
 // --- ReplayHIDDevice: replays captured traffic for regression tests ---
+//
+// Reads are gated by writes to preserve the original request-response ordering.
+// Reads recorded before the first write are available immediately. Reads between
+// write N and write N+1 become available only after the Nth Write() call is made.
 
 class ReplayHIDDevice : public IHIDDevice
 {
@@ -88,9 +92,12 @@ public:
     const std::vector<std::vector<uint8_t>> &GetActualWrites() const { return m_aActualWrites; }
 
 private:
-    std::queue<std::vector<uint8_t>> m_aReads;
+    // Read batches: m_aReadBatches[i] contains reads available after i writes have occurred.
+    std::vector<std::queue<std::vector<uint8_t>>> m_aReadBatches;
+    int m_iWriteCount = 0;
     std::vector<std::vector<uint8_t>> m_aExpectedWrites;
     std::vector<std::vector<uint8_t>> m_aActualWrites;
+    std::mutex m_Mutex;
 };
 
 // --- Utility: load all records from a capture file ---
