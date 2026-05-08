@@ -2,6 +2,7 @@
 #define SMX_H
 
 #include <cstdint>
+#include <cstring>
 
 #ifdef SMX_EXPORTS
     #ifdef _WIN32
@@ -20,6 +21,52 @@
 #define SERIAL_SIZE 16
 
 struct SMXInfo;
+
+/// Packed sensor settings for a single panel.
+/// Contains low/high thresholds for load cell and FSR sensors,
+/// as well as combined (multi-sensor) thresholds.
+#pragma pack(push, 1)
+struct packed_sensor_settings_t {
+    uint8_t loadCellLowThreshold;
+    uint8_t loadCellHighThreshold;
+    uint8_t fsrLowThreshold[4];
+    uint8_t fsrHighThreshold[4];
+    uint16_t combinedLowThreshold;
+    uint16_t combinedHighThreshold;
+    uint16_t reserved;
+};
+#pragma pack(pop)
+
+/// Configuration state for an SMX device.
+/// Describes debounce settings, sensor thresholds, panel colors, auto-calibration
+/// parameters, and other device settings. Total size is 250 bytes, tightly packed.
+///
+/// Read with SMX_GetConfig(). Write with SMX_SetConfig().
+#pragma pack(push, 1)
+struct SMXConfig
+{
+    uint8_t masterVersion = 0xFF;
+    uint8_t configVersion = 0x05;
+    uint8_t flags = 0;
+    uint16_t debounceNodelayMilliseconds = 0;
+    uint16_t debounceDelayMilliseconds = 0;
+    uint16_t panelDebounceMicroseconds = 4000;
+    uint8_t autoCalibrationMaxDeviation = 100;
+    uint8_t badSensorMinimumDelaySeconds = 15;
+    uint16_t autoCalibrationAveragesPerUpdate = 60;
+    uint16_t autoCalibrationSamplesPerAverage = 500;
+    uint16_t autoCalibrationMaxTare = 0xFFFF;
+    uint8_t enabledSensors[5]{};
+    uint8_t autoLightsTimeout = 1000/128;
+    uint8_t stepColor[3*9]{};
+    uint8_t platformStripColor[3]{};
+    uint16_t autoLightPanelMask = 0xFFFF;
+    uint8_t panelRotation{};
+    packed_sensor_settings_t panelSettings[9]{};
+    uint8_t preDetailsDelayMilliseconds = 5;
+    uint8_t padding[49]{};
+};
+#pragma pack(pop)
 
 // All functions are nonblocking. Getters return the most recent state.
 // Setters return immediately and do their work in the background.
@@ -108,6 +155,29 @@ SMX_API void SMX_SetLogCallback(SMXLogCallback callback);
 /// @param info [out] Pointer to SMXInfo structure to be filled with device info.
 ///            If pad is invalid or device is not connected, all fields are zeroed.
 SMX_API void SMX_GetInfo(int pad, SMXInfo *info);
+
+/// Retrieves the current configuration for a device.
+/// Returns true if the config was successfully retrieved (device is connected and
+/// config has been read). Returns false if the device is not connected.
+///
+/// If SMX_SetConfig was called but the write hasn't completed yet, this returns
+/// the pending config (optimistic read).
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config [out] Pointer to SMXConfig structure to be filled.
+/// @return True if config was retrieved, false if device is not connected.
+SMX_API bool SMX_GetConfig(int pad, SMXConfig *config);
+
+/// Writes a new configuration to a device.
+/// The write is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire
+/// when the device acknowledges the new configuration.
+///
+/// Config writes are rate-limited to once per second to prevent excess EEPROM wear.
+/// If called more frequently, only the most recent config is sent after the cooldown.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config Pointer to the SMXConfig to write.
+SMX_API void SMX_SetConfig(int pad, const SMXConfig *config);
 
 /// Retrieves the current input state (pressed panels) for a device.
 /// The returned value is a 16-bit bitmask where each bit corresponds to a panel.

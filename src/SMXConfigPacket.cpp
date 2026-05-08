@@ -77,3 +77,55 @@ void ConvertToNewConfig(const std::vector<uint8_t> &oldConfig, SMXConfig &newCon
 
     newConfig.debounceDelayMilliseconds = old.debounceDelayMilliseconds;
 }
+
+/// Converts new config format (v5) to old config format (v3) for writing to old firmware.
+/// Maps new panelSettings thresholds back to the old per-panel threshold fields.
+///
+/// @param newConfig The new-format config to convert from.
+/// @param oldConfigData [in/out] Raw old config data to be updated. Extended to 128 bytes if smaller.
+void ConvertToOldConfig(const SMXConfig &newConfig, std::vector<uint8_t> &oldConfigData)
+{
+    if(oldConfigData.size() < 128)
+        oldConfigData.resize(128, 0xFF);
+
+    OldSMXConfig &old = *reinterpret_cast<OldSMXConfig*>(oldConfigData.data());
+
+    old.masterDebounceMilliseconds = newConfig.debounceNodelayMilliseconds;
+
+    old.panelThreshold7Low = newConfig.panelSettings[7].loadCellLowThreshold;
+    old.panelThreshold4Low = newConfig.panelSettings[4].loadCellLowThreshold;
+    old.panelThreshold2Low = newConfig.panelSettings[2].loadCellLowThreshold;
+    old.panelThreshold7High = newConfig.panelSettings[7].loadCellHighThreshold;
+    old.panelThreshold4High = newConfig.panelSettings[4].loadCellHighThreshold;
+    old.panelThreshold2High = newConfig.panelSettings[2].loadCellHighThreshold;
+
+    old.panelDebounceMicroseconds = newConfig.panelDebounceMicroseconds;
+    old.autoCalibrationMaxDeviation = newConfig.autoCalibrationMaxDeviation;
+    old.badSensorMinimumDelaySeconds = newConfig.badSensorMinimumDelaySeconds;
+    old.autoCalibrationAveragesPerUpdate = newConfig.autoCalibrationAveragesPerUpdate;
+
+    old.panelThreshold1Low = newConfig.panelSettings[1].loadCellLowThreshold;
+    old.panelThreshold1High = newConfig.panelSettings[1].loadCellHighThreshold;
+
+    memcpy(old.enabledSensors, newConfig.enabledSensors, sizeof(newConfig.enabledSensors));
+    old.autoLightsTimeout = newConfig.autoLightsTimeout;
+    memcpy(old.stepColor, newConfig.stepColor, sizeof(newConfig.stepColor));
+    old.panelRotation = newConfig.panelRotation;
+    old.autoCalibrationSamplesPerAverage = newConfig.autoCalibrationSamplesPerAverage;
+
+    old.masterVersion = newConfig.masterVersion;
+    old.configVersion = newConfig.configVersion;
+
+    old.panelThreshold0Low = newConfig.panelSettings[0].loadCellLowThreshold;
+    old.panelThreshold3Low = newConfig.panelSettings[3].loadCellLowThreshold;
+    old.panelThreshold5Low = newConfig.panelSettings[5].loadCellLowThreshold;
+    old.panelThreshold6Low = newConfig.panelSettings[6].loadCellLowThreshold;
+    old.panelThreshold8Low = newConfig.panelSettings[8].loadCellLowThreshold;
+    old.panelThreshold0High = newConfig.panelSettings[0].loadCellHighThreshold;
+    old.panelThreshold3High = newConfig.panelSettings[3].loadCellHighThreshold;
+    old.panelThreshold5High = newConfig.panelSettings[5].loadCellHighThreshold;
+    old.panelThreshold6High = newConfig.panelSettings[6].loadCellHighThreshold;
+    old.panelThreshold8High = newConfig.panelSettings[8].loadCellHighThreshold;
+
+    old.debounceDelayMilliseconds = newConfig.debounceDelayMilliseconds;
+}

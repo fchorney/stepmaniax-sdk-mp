@@ -283,3 +283,183 @@ TEST_CASE("Real hardware: input state reads")
 
     SMX_Stop();
 }
+
+TEST_CASE("Real hardware: factory reset restores defaults")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/factory_reset";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    atomic<int> iConfigUpdated{0};
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *pCount = static_cast<atomic<int>*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                pCount[0].fetch_add(1);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                pCount[1].fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
+
+    // Find a connected pad
+    int iPad = -1;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected) { iPad = i; break; }
+    }
+    REQUIRE(iPad >= 0);
+
+    // Save original config
+    SMXConfig originalConfig = {};
+    REQUIRE(SMX_GetConfig(iPad, &originalConfig));
+    MESSAGE("Original panelDebounceMicroseconds: ", originalConfig.panelDebounceMicroseconds);
+
+    // Set a non-default value
+    SMXConfig modifiedConfig = originalConfig;
+    modifiedConfig.panelDebounceMicroseconds = 9999;
+    int iCountBefore = iConfigUpdated.load();
+    SMX_SetConfig(iPad, &modifiedConfig);
+    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+    // Verify the modification took
+    SMXConfig readBack = {};
+    REQUIRE(SMX_GetConfig(iPad, &readBack));
+    REQUIRE(readBack.panelDebounceMicroseconds == 9999);
+
+    // Factory reset
+    iCountBefore = iConfigUpdated.load();
+    SMX_FactoryReset(iPad);
+    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+    // Verify config was reset (should no longer be 9999)
+    SMXConfig resetConfig = {};
+    REQUIRE(SMX_GetConfig(iPad, &resetConfig));
+    CHECK(resetConfig.panelDebounceMicroseconds != 9999);
+    MESSAGE("After factory reset panelDebounceMicroseconds: ", resetConfig.panelDebounceMicroseconds);
+
+    // Restore original config
+    iCountBefore = iConfigUpdated.load();
+    SMX_SetConfig(iPad, &originalConfig);
+    WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: config get/set round-trip")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/config_get_set";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    atomic<int> iConfigUpdated{0};
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *pCount = static_cast<atomic<int>*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                pCount[0].fetch_add(1);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                pCount[1].fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
+
+    // Find a connected pad
+    int iPad = -1;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected) { iPad = i; break; }
+    }
+    REQUIRE(iPad >= 0);
+
+    // Get original config
+    SMXConfig originalConfig = {};
+    REQUIRE(SMX_GetConfig(iPad, &originalConfig));
+    MESSAGE("Original panelDebounceMicroseconds: ", originalConfig.panelDebounceMicroseconds);
+
+    // Modify one value
+    SMXConfig modifiedConfig = originalConfig;
+    uint16_t iNewValue = (originalConfig.panelDebounceMicroseconds == 4000) ? 5000 : 4000;
+    modifiedConfig.panelDebounceMicroseconds = iNewValue;
+
+    // Write modified config
+    int iCountBefore = iConfigUpdated.load();
+    SMX_SetConfig(iPad, &modifiedConfig);
+
+    // Wait for ConfigUpdated callback (read-back verification)
+    bool bGotUpdate = WaitFor([&]() {
+        return iConfigUpdated.load() > iCountBefore;
+    }, 5000);
+    CHECK(bGotUpdate);
+
+    // Verify the change took effect
+    SMXConfig readBack = {};
+    REQUIRE(SMX_GetConfig(iPad, &readBack));
+    CHECK(readBack.panelDebounceMicroseconds == iNewValue);
+    MESSAGE("Read back panelDebounceMicroseconds: ", readBack.panelDebounceMicroseconds);
+
+    // Restore original config
+    iCountBefore = iConfigUpdated.load();
+    SMX_SetConfig(iPad, &originalConfig);
+    WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
+
+    // Verify restore
+    SMXConfig restored = {};
+    REQUIRE(SMX_GetConfig(iPad, &restored));
+    CHECK(restored.panelDebounceMicroseconds == originalConfig.panelDebounceMicroseconds);
+    MESSAGE("Restored panelDebounceMicroseconds: ", restored.panelDebounceMicroseconds);
+
+    SMX_Stop();
+}

@@ -75,10 +75,17 @@ public:
             char cmd = static_cast<char>(buf[3]);
             if(cmd == 'G' || cmd == 'g')
             {
-                // Config read: respond with the config packet (includes HOST_CMD_FINISHED)
+                // Config read: respond with the config packet(s) (includes HOST_CMD_FINISHED)
                 lock_guard<mutex> lock(m_Mutex);
-                if(!m_ConfigResponse.empty())
+                if(!m_aConfigResponsePackets.empty())
+                {
+                    for(const auto &pkt : m_aConfigResponsePackets)
+                        m_aReads.push(pkt);
+                }
+                else if(!m_ConfigResponse.empty())
+                {
                     m_aReads.push(m_ConfigResponse);
+                }
             }
             else
             {
@@ -99,6 +106,11 @@ public:
     void SetConfigResponse(vector<uint8_t> resp)
     {
         m_ConfigResponse = std::move(resp);
+    }
+
+    void SetConfigResponsePackets(vector<vector<uint8_t>> packets)
+    {
+        m_aConfigResponsePackets = std::move(packets);
     }
 
     void SetFailReadsAfterCount(int count)
@@ -138,6 +150,7 @@ private:
     mutex m_Mutex;
     queue<vector<uint8_t>> m_aReads;
     vector<uint8_t> m_ConfigResponse;
+    vector<vector<uint8_t>> m_aConfigResponsePackets;
     int m_iFailAfterReads = 0;
     int m_iReadCount = 0;
     bool m_bFailWrites = false;

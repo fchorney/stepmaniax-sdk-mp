@@ -33,12 +33,12 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Force recalibration | `SMX_ForceRecalibration` | Trigger immediate sensor recalibration |
 | Re-enable auto lights | `SMX_ReenableAutoLights` | Return panels to automatic step lighting |
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
+| Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
 
 ### Not yet implemented
 
 | Feature | Original API | Complexity | Description |
 |---------|-------------|------------|-------------|
-| Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Medium | Read/write pad thresholds, lighting config, sensor settings. Config is already read internally but not exposed. |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
 | Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | Platform LED strip | `SMX_SetPlatformLights` | Medium | Control the platform edge LED strip (firmware v4+) |
@@ -298,11 +298,29 @@ void SMX_SetLogCallback(SMXLogCallback callback);
 // Get connection status, serial number, firmware version.
 void SMX_GetInfo(int pad, SMXInfo *info);
 
+// Get current device configuration. Returns true if config is available.
+bool SMX_GetConfig(int pad, SMXConfig *config);
+
+// Write new configuration to device. Async; fires ConfigUpdated callback on completion.
+void SMX_SetConfig(int pad, const SMXConfig *config);
+
 // Get currently pressed panels as a bitmask.
 uint16_t SMX_GetInputState(int pad);
 
 // Assign serial numbers to controllers without one.
 void SMX_SetSerialNumbers();
+
+// Reset pad to factory default configuration.
+void SMX_FactoryReset(int pad);
+
+// Trigger immediate sensor recalibration.
+void SMX_ForceRecalibration(int pad);
+
+// Re-enable automatic panel lighting on both pads.
+void SMX_ReenableAutoLights();
+
+// Set panel-side diagnostic test mode.
+void SMX_SetPanelTestMode(PanelTestMode mode);
 
 // Configure thread sleep intervals (main thread ms, USB polling thread us).
 void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
@@ -312,6 +330,9 @@ void SMX_SetInputStateMode(bool bAlwaysFire);
 
 // Get SDK version string.
 const char *SMX_Version();
+
+// Get elapsed time in seconds since SDK was initialized.
+double SMX_GetMonotonicTime();
 ```
 
 `pad` is 0 for player 1, 1 for player 2.
@@ -407,6 +428,7 @@ Panel: ┌───┬───┬───┐
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp   # Config format conversion tests
+│   ├── test_config_api.cpp      # Config get/set API tests
 │   ├── test_helpers.cpp         # Utility function tests
 │   ├── test_helpers_manager.h    # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
@@ -430,17 +452,6 @@ This abstraction exists for two reasons:
 1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
 
 2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
-
-## Roadmap
-
-This SDK currently implements a subset of the original StepManiaX SDK's functionality. Planned additions include:
-
-- Reading per-panel sensor data
-- Writing pad configuration (thresholds, lighting, etc.)
-- Factory reset
-- Panel test modes
-- GIF Upload
-- and More!
 
 ## Acknowledgments
 

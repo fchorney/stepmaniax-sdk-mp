@@ -154,9 +154,15 @@ public:
         m_pUpdateCallback(std::move(other.m_pUpdateCallback)),
         m_Connection(std::move(other.m_Connection)),
         m_Config(other.m_Config),
-        m_bHaveConfig(other.m_bHaveConfig)
+        m_WantedConfig(other.m_WantedConfig),
+        m_bHaveConfig(other.m_bHaveConfig),
+        m_bSendConfig(other.m_bSendConfig),
+        m_bSendingConfig(other.m_bSendingConfig),
+        m_fDelayConfigUpdatesUntil(other.m_fDelayConfigUpdatesUntil)
     {
         other.m_bHaveConfig = false;
+        other.m_bSendConfig = false;
+        other.m_bSendingConfig = false;
     }
 
     SMXDevice &operator=(SMXDevice &&other) noexcept
@@ -167,8 +173,14 @@ public:
             m_pUpdateCallback = std::move(other.m_pUpdateCallback);
             m_Connection = std::move(other.m_Connection);
             m_Config = other.m_Config;
+            m_WantedConfig = other.m_WantedConfig;
             m_bHaveConfig = other.m_bHaveConfig;
+            m_bSendConfig = other.m_bSendConfig;
+            m_bSendingConfig = other.m_bSendingConfig;
+            m_fDelayConfigUpdatesUntil = other.m_fDelayConfigUpdatesUntil;
             other.m_bHaveConfig = false;
+            other.m_bSendConfig = false;
+            other.m_bSendingConfig = false;
         }
         return *this;
     }
@@ -303,6 +315,31 @@ public:
         m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
     }
 
+    /// Retrieves the current device configuration.
+    /// If a SetConfig write is pending, returns the pending config (optimistic read).
+    /// @param config [out] SMXConfig structure to be filled.
+    /// @return True if config is available (device connected with config read).
+    bool GetConfig(SMXConfig &config) const
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!IsConnectedLocked())
+            return false;
+        config = m_bSendConfig ? m_WantedConfig : m_Config;
+        return true;
+    }
+
+    /// Queues a new configuration to be written to the device.
+    /// The write is rate-limited to once per second to prevent EEPROM wear.
+    /// @param config The configuration to write.
+    void SetConfig(const SMXConfig &config)
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!IsConnectedLocked())
+            return;
+        m_WantedConfig = config;
+        m_bSendConfig = true;
+    }
+
     /// Triggers an immediate sensor recalibration on this device.
     void ForceRecalibration()
     {
@@ -333,6 +370,7 @@ public:
             return;
 
         CheckActive();
+        SendConfig();
 
         m_Connection.Update(sError);
         if(!sError.empty())
@@ -414,11 +452,64 @@ private:
         m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
     }
 
+    /// Sends pending config to the device if conditions are met.
+    /// Rate-limited to once per second to prevent EEPROM wear.
+    void SendConfig()
+    {
+        if(!m_Connection.IsConnected() || !m_bSendConfig || m_bSendingConfig)
+            return;
+        if(!m_bHaveConfig)
+            return;
+
+        // Rate limit: don't write more than once per second.
+        double fNow = GetMonotonicTime();
+        if(m_fDelayConfigUpdatesUntil > fNow)
+            return;
+        m_fDelayConfigUpdatesUntil = fNow + 1.0;
+
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+
+        string sData;
+        if(di.m_iFirmwareVersion >= 5)
+        {
+            sData = "W";
+            uint8_t iSize = sizeof(SMXConfig);
+            sData.append(reinterpret_cast<char*>(&iSize), 1);
+            sData.append(reinterpret_cast<const char*>(&m_WantedConfig), sizeof(SMXConfig));
+        }
+        else
+        {
+            sData = "w";
+            vector<uint8_t> outputConfig(reinterpret_cast<const uint8_t*>(&m_Config),
+                                         reinterpret_cast<const uint8_t*>(&m_Config) + sizeof(SMXConfig));
+            ConvertToOldConfig(m_WantedConfig, outputConfig);
+            uint8_t iSize = static_cast<uint8_t>(outputConfig.size());
+            sData.append(reinterpret_cast<char*>(&iSize), 1);
+            sData.append(reinterpret_cast<const char*>(outputConfig.data()), outputConfig.size());
+        }
+
+        m_bSendingConfig = true;
+        m_Connection.SendCommand(sData, [this](string) {
+            m_bSendingConfig = false;
+        });
+        m_bSendConfig = false;
+
+        // Update cached config optimistically.
+        m_Config = m_WantedConfig;
+
+        // Read back to verify.
+        m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
+    }
+
     recursive_mutex *m_pLock = nullptr;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
+    SMXConfig m_WantedConfig;
     bool m_bHaveConfig = false;
+    bool m_bSendConfig = false;
+    bool m_bSendingConfig = false;
+    double m_fDelayConfigUpdatesUntil = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -803,6 +894,28 @@ SMX_API void SMX_GetInfo(const int pad, SMXInfo *info)
     if(!g_pSMX) return;
     const auto *dev = g_pSMX->GetDevice(pad);
     if(dev) dev->GetInfo(*info);
+}
+
+/// Retrieves the current configuration for a device.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config [out] Pointer to SMXConfig structure to be filled.
+/// @return True if config was retrieved, false if device is not connected.
+SMX_API bool SMX_GetConfig(const int pad, SMXConfig *config)
+{
+    if(!g_pSMX || !config) return false;
+    const auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) return false;
+    return dev->GetConfig(*config);
+}
+
+/// Writes a new configuration to a device.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config Pointer to the SMXConfig to write.
+SMX_API void SMX_SetConfig(const int pad, const SMXConfig *config)
+{
+    if(!g_pSMX || !config) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->SetConfig(*config);
 }
 
 /// Retrieves the current input state (pressed panels) for a device.

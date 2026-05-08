@@ -60,6 +60,7 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_device_connection.cpp   # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp         # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp       # Config format conversion tests
+│   ├── test_config_api.cpp          # Config get/set API tests
 │   ├── test_helpers.cpp             # Utility function tests
 │   ├── test_helpers_manager.h       # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp     # Move semantics / pad swap regression tests
