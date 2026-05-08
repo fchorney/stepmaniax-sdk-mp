@@ -291,7 +291,7 @@ The sample will scan for connected SMX pads and print connection events and pane
 Example output:
 
 ```
-SMX SDK Multi Platform v0.1.1
+SMX SDK Multi Platform v0.2.0
 Scanning for StepManiaX devices... Press Ctrl+C to quit.
 Usage: ./smx-sample [main_thread_ms] [usb_polling_us] [--all-packets] [--test-mode]
        [--uncalibrated] [--calibrated] [--noise] [--tare]
