@@ -522,3 +522,45 @@ TEST_CASE("Replay: platform lights")
 
     SMX_Stop();
 }
+
+TEST_CASE("Replay: sensor test mode")
+{
+    string sFile0 = CapturePath("sensor_test_mode/device_0.smxhid");
+    string sFile1 = CapturePath("sensor_test_mode/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool*>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    // Verify the capture contains 'y' (sensor test mode) commands
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+    bool bFoundTestCmd = false;
+    for(const auto *dev : devs)
+    {
+        if(WritesContainCommand(dev->GetExpectedWrites(), "y"))
+        {
+            bFoundTestCmd = true;
+            break;
+        }
+    }
+    CHECK(bFoundTestCmd);
+
+    SMX_Stop();
+}

@@ -9,41 +9,6 @@ using namespace std;
 using namespace SMX;
 using namespace SMXTestHelpers;
 
-// --- Helpers ---
-
-/// Builds config response packets containing a full SMXConfig struct.
-/// Fragments into multiple HID packets like the real device would.
-/// Returns a vector of packets to queue on the fake device.
-static vector<vector<uint8_t>> MakeFullConfigResponsePackets(const SMXConfig &cfg)
-{
-    // Build the full payload: 'G' + size + config data
-    vector<uint8_t> payload;
-    payload.push_back('G');
-    payload.push_back(static_cast<uint8_t>(sizeof(SMXConfig)));
-    const auto *p = reinterpret_cast<const uint8_t*>(&cfg);
-    payload.insert(payload.end(), p, p + sizeof(SMXConfig));
-
-    // Fragment into HID packets (max 61 bytes payload per packet)
-    vector<vector<uint8_t>> packets;
-    for(size_t offset = 0; offset < payload.size(); offset += HID_MAX_PAYLOAD_SIZE)
-    {
-        size_t chunkSize = min(HID_MAX_PAYLOAD_SIZE, payload.size() - offset);
-        uint8_t flags = 0;
-        if(offset == 0)
-            flags |= PACKET_FLAG_START_OF_COMMAND;
-        if(offset + chunkSize == payload.size())
-            flags |= PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED;
-
-        vector<uint8_t> pkt(HID_PACKET_SIZE, 0);
-        pkt[0] = HID_REPORT_DATA;
-        pkt[1] = flags;
-        pkt[2] = static_cast<uint8_t>(chunkSize);
-        memcpy(&pkt[3], payload.data() + offset, chunkSize);
-        packets.push_back(pkt);
-    }
-    return packets;
-}
-
 // =========================================================================
 // SMX_GetConfig tests
 // =========================================================================
