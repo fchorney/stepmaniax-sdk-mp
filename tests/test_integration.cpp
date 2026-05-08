@@ -314,15 +314,18 @@ TEST_CASE("Real hardware: factory reset restores defaults")
     atomic<int> iConnected{0};
     atomic<int> iConfigUpdated{0};
 
+    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
+    CbData cbData{&iConnected, &iConfigUpdated};
+
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            auto *pCount = static_cast<atomic<int>*>(pUser);
+            auto *d = static_cast<CbData*>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                pCount[0].fetch_add(1);
+                d->pConnected->fetch_add(1);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                pCount[1].fetch_add(1);
+                d->pConfigUpdated->fetch_add(1);
         },
-        &iConnected, std::move(pEnumerator));
+        &cbData, std::move(pEnumerator));
 
     REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
 
@@ -402,15 +405,18 @@ TEST_CASE("Real hardware: config get/set round-trip")
     atomic<int> iConnected{0};
     atomic<int> iConfigUpdated{0};
 
+    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
+    CbData cbData{&iConnected, &iConfigUpdated};
+
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            auto *pCount = static_cast<atomic<int>*>(pUser);
+            auto *d = static_cast<CbData*>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                pCount[0].fetch_add(1);
+                d->pConnected->fetch_add(1);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                pCount[1].fetch_add(1);
+                d->pConfigUpdated->fetch_add(1);
         },
-        &iConnected, std::move(pEnumerator));
+        &cbData, std::move(pEnumerator));
 
     REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
 
