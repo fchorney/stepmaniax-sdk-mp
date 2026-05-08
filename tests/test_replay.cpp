@@ -361,3 +361,110 @@ TEST_CASE("Replay: re-enable auto lights command in capture")
 
     SMX_Stop();
 }
+
+TEST_CASE("Replay: factory reset")
+{
+    string sFile0 = CapturePath("factory_reset/device_0.smxhid");
+    string sFile1 = CapturePath("factory_reset/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    struct CbData { bool bConnected = false; int iConfigUpdated = 0; };
+    CbData cbData;
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CbData*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                d->bConnected = true;
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                d->iConfigUpdated++;
+        },
+        &cbData, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return cbData.bConnected; }, 5000));
+
+    // Verify we can read config after connection
+    SMXConfig cfg = {};
+    CHECK(SMX_GetConfig(0, &cfg));
+    MESSAGE("Factory reset replay: initial panelDebounceMicroseconds=", cfg.panelDebounceMicroseconds);
+
+    // Verify the capture contains a write command ("W" for config set)
+    // and a factory reset command ("f\n") on at least one device
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+    bool bFoundWrite = false;
+    bool bFoundReset = false;
+    for(const auto *dev : devs)
+    {
+        if(WritesContainCommand(dev->GetExpectedWrites(), "W"))
+            bFoundWrite = true;
+        if(WritesContainCommand(dev->GetExpectedWrites(), string("f\n", 2)))
+            bFoundReset = true;
+    }
+    CHECK(bFoundWrite);
+    CHECK(bFoundReset);
+
+    SMX_Stop();
+}
+
+TEST_CASE("Replay: config get/set")
+{
+    string sFile0 = CapturePath("config_get_set/device_0.smxhid");
+    string sFile1 = CapturePath("config_get_set/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    struct CbData { bool bConnected = false; int iConfigUpdated = 0; };
+    CbData cbData;
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CbData*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                d->bConnected = true;
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                d->iConfigUpdated++;
+        },
+        &cbData, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return cbData.bConnected; }, 5000));
+
+    // Verify we can read config after connection
+    SMXConfig cfg = {};
+    CHECK(SMX_GetConfig(0, &cfg));
+    MESSAGE("Config get/set replay: panelDebounceMicroseconds=", cfg.panelDebounceMicroseconds);
+
+    // Verify the capture contains config write commands ("W") on at least one device
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+    bool bFoundWrite = false;
+    bool bFoundRead = false;
+    for(const auto *dev : devs)
+    {
+        if(WritesContainCommand(dev->GetExpectedWrites(), "W"))
+            bFoundWrite = true;
+        if(WritesContainCommand(dev->GetExpectedWrites(), "G"))
+            bFoundRead = true;
+    }
+    CHECK(bFoundWrite);
+    CHECK(bFoundRead);
+
+    SMX_Stop();
+}
