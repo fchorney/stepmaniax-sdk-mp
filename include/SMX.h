@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 
 #ifdef SMX_EXPORTS
     #ifdef _WIN32
@@ -145,6 +146,10 @@ enum SMXUpdateCallbackReason : uint32_t {
 
     /// Device configuration has been received or updated.
     SMXUpdateCallback_ConfigUpdated = 1 << 4,
+
+    /// New sensor test data has been received.
+    /// Call SMX_GetTestData() to retrieve the data.
+    SMXUpdateCallback_SensorTestData = 1 << 5,
 };
 
 // Helper macro for checking if a reason includes a specific flag
@@ -286,6 +291,72 @@ enum PanelTestMode {
     PanelTestMode_PressureTest = '1',
 };
 
+/// Sensor test modes for reading raw/calibrated sensor values.
+/// The values (except Off) correspond with the protocol and must not be changed.
+enum SensorTestMode {
+    SensorTestMode_Off = 0,
+    // Return the raw, uncalibrated value of each sensor.
+    SensorTestMode_UncalibratedValues = '0',
+    // Return the calibrated value of each sensor.
+    SensorTestMode_CalibratedValues = '1',
+    // Return the sensor noise value.
+    SensorTestMode_Noise = '2',
+    // Return the sensor tare value.
+    SensorTestMode_Tare = '3',
+};
+
+/// Sensor test mode data returned by SMX_GetTestData.
+/// Contains per-panel sensor readings and diagnostic information.
+struct SMXSensorTestModeData
+{
+    // If false, we didn't receive a response from that panel.
+    bool bHaveDataFromPanel[9];
+
+    // Sensor readings for each panel. The meaning depends on the active SensorTestMode:
+    //   UncalibratedValues: Raw ADC reading from the sensor (unscaled).
+    //   CalibratedValues:   Value after calibration/tare subtraction. Represents force.
+    //   Noise:              Standard deviation of recent readings, SQUARED.
+    //                       Take sqrt() to get the actual noise level.
+    //   Tare:               The current tare (baseline) value for each sensor.
+    int16_t sensorLevel[9][4];
+
+    // True if a sensor's most recent reading is invalid.
+    bool bBadSensorInput[9][4];
+
+    // The DIP switch settings on each panel (4-bit value).
+    int iDIPSwitchPerPanel[9];
+
+    // Bad sensor selection jumper indication for each sensor on each panel.
+    bool iBadJumper[9][4];
+};
+
+/// Scales a raw sensor test value for display (e.g., in a bar graph).
+/// Applies mode-specific transformations:
+///   - Noise mode: returns sqrt(value) since raw values are variance (std dev squared).
+///   - FSR panels (fw >= 4 with PlatformFlags_FSR): right-shifts by 2 and scales to 0.0-1.0 (max ~250).
+///   - Load cell panels: scales to 0.0-1.0 (max ~500).
+/// Small negative values (-10 to 0) are clamped to 0 (sensor noise artifact).
+///
+/// @param iValue Raw sensor value from SMXSensorTestModeData::sensorLevel.
+/// @param mode The active sensor test mode.
+/// @param bIsFSR True if the panel uses FSR sensors (check config flags & PlatformFlags_FSR, fw >= 4).
+/// @return Normalized value in the range [0.0, 1.0+] suitable for display.
+inline float SMX_ScaleSensorValue(int16_t iValue, SensorTestMode mode, bool bIsFSR)
+{
+    float fValue = static_cast<float>(iValue);
+
+    if(mode == SensorTestMode_Noise)
+        fValue = sqrtf(fValue > 0 ? fValue : 0);
+
+    // Clamp small negative values from noise.
+    if(fValue < 0 && fValue >= -10)
+        fValue = 0;
+
+    if(bIsFSR)
+        return (fValue / 4.0f) / 250.0f;
+    return fValue / 500.0f;
+}
+
 /// Sets a panel test mode on all connected pads.
 /// When enabled, the SDK periodically resends the command to keep the mode active
 /// (the device times out after ~1 second without a refresh).
@@ -293,6 +364,24 @@ enum PanelTestMode {
 ///
 /// @param mode The test mode to activate, or PanelTestMode_Off to disable.
 SMX_API void SMX_SetPanelTestMode(PanelTestMode mode);
+
+/// Sets the sensor test mode for a pad.
+/// When enabled, the SDK periodically requests sensor data from the device.
+/// Use SMX_GetTestData to retrieve the most recent readings.
+/// Set to SensorTestMode_Off to stop requesting data.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param mode The sensor test mode to activate.
+SMX_API void SMX_SetTestMode(int pad, SensorTestMode mode);
+
+/// Retrieves the most recent sensor test data for a pad.
+/// Returns true if data is available (test mode is active and at least one
+/// response has been received from the device).
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param data [out] Pointer to SMXSensorTestModeData to be filled.
+/// @return True if data was retrieved, false if no data is available.
+SMX_API bool SMX_GetTestData(int pad, SMXSensorTestModeData *data);
 
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().

@@ -35,12 +35,12 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
 | Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
+| Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
 
 ### Not yet implemented
 
 | Feature | Original API | Complexity | Description |
 |---------|-------------|------------|-------------|
-| Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
 | Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
 | Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
@@ -325,6 +325,12 @@ void SMX_SetPlatformLights(const char *pLightData);
 // Set panel-side diagnostic test mode.
 void SMX_SetPanelTestMode(PanelTestMode mode);
 
+// Set sensor test mode (read raw/calibrated sensor values).
+void SMX_SetTestMode(int pad, SensorTestMode mode);
+
+// Get most recent sensor test data. Returns true if data is available.
+bool SMX_GetTestData(int pad, SMXSensorTestModeData *data);
+
 // Configure thread sleep intervals (main thread ms, USB polling thread us).
 void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 
@@ -351,6 +357,7 @@ The `SMXUpdateCallback` receives a `reason` bitmask indicating what triggered th
 | `SMXUpdateCallback_Connected` | `1 << 2` | A pad has become fully connected (device info and config received). |
 | `SMXUpdateCallback_Disconnected` | `1 << 3` | A pad has been disconnected. |
 | `SMXUpdateCallback_ConfigUpdated` | `1 << 4` | Device configuration has been received or updated. |
+| `SMXUpdateCallback_SensorTestData` | `1 << 5` | New sensor test data received. Call `SMX_GetTestData()` for the data. |
 
 Use the `SMX_REASON_IS(reason, flag)` macro to check for specific flags:
 

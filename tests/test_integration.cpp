@@ -553,3 +553,114 @@ TEST_CASE("Real hardware: platform lights set red then blue")
 
     SMX_Stop();
 }
+
+TEST_CASE("Real hardware: sensor test mode all modes")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/sensor_test_mode";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    atomic<int> iTestDataReceived{0};
+
+    struct CbData { atomic<int> *pConnected; atomic<int> *pTestData; };
+    CbData cbData{&iConnected, &iTestDataReceived};
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CbData*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                d->pConnected->fetch_add(1);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_SensorTestData))
+                d->pTestData->fetch_add(1);
+        },
+        &cbData, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
+
+    // Find a connected pad
+    int iPad = -1;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected) { iPad = i; break; }
+    }
+    REQUIRE(iPad >= 0);
+
+    SensorTestMode modes[] = {
+        SensorTestMode_UncalibratedValues,
+        SensorTestMode_CalibratedValues,
+        SensorTestMode_Noise,
+        SensorTestMode_Tare,
+    };
+    const char *modeNames[] = { "Uncalibrated", "Calibrated", "Noise", "Tare" };
+
+    for(int m = 0; m < 4; m++)
+    {
+        CAPTURE(modeNames[m]);
+
+        iTestDataReceived = 0;
+        SMX_SetTestMode(iPad, modes[m]);
+
+        // Wait for at least one sensor data callback
+        bool bGotData = WaitFor([&]() {
+            return iTestDataReceived.load() >= 1;
+        }, 5000);
+        CHECK(bGotData);
+
+        if(bGotData)
+        {
+            SMXSensorTestModeData data = {};
+            REQUIRE(SMX_GetTestData(iPad, &data));
+
+            // At least some panels should have responded
+            int iPanelsWithData = 0;
+            for(int p = 0; p < 9; p++)
+                if(data.bHaveDataFromPanel[p])
+                    iPanelsWithData++;
+
+            CHECK(iPanelsWithData > 0);
+            MESSAGE(modeNames[m], ": ", iPanelsWithData, " panels responded");
+
+            // Print sensor values for first panel with data
+            for(int p = 0; p < 9; p++)
+            {
+                if(!data.bHaveDataFromPanel[p])
+                    continue;
+                MESSAGE("  Panel ", p, " sensors: ",
+                    data.sensorLevel[p][0], ", ",
+                    data.sensorLevel[p][1], ", ",
+                    data.sensorLevel[p][2], ", ",
+                    data.sensorLevel[p][3]);
+                break;
+            }
+        }
+
+        SMX_SetTestMode(iPad, SensorTestMode_Off);
+        this_thread::sleep_for(chrono::milliseconds(200));
+    }
+
+    SMX_Stop();
+}

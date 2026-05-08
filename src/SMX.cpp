@@ -158,11 +158,18 @@ public:
         m_bHaveConfig(other.m_bHaveConfig),
         m_bSendConfig(other.m_bSendConfig),
         m_bSendingConfig(other.m_bSendingConfig),
-        m_fDelayConfigUpdatesUntil(other.m_fDelayConfigUpdatesUntil)
+        m_fDelayConfigUpdatesUntil(other.m_fDelayConfigUpdatesUntil),
+        m_SensorTestMode(other.m_SensorTestMode),
+        m_WaitingForSensorTestModeResponse(other.m_WaitingForSensorTestModeResponse),
+        m_fSentSensorTestModeRequestAt(other.m_fSentSensorTestModeRequestAt),
+        m_SensorTestData(other.m_SensorTestData),
+        m_bHaveSensorTestData(other.m_bHaveSensorTestData)
     {
         other.m_bHaveConfig = false;
         other.m_bSendConfig = false;
         other.m_bSendingConfig = false;
+        other.m_SensorTestMode = SensorTestMode_Off;
+        other.m_bHaveSensorTestData = false;
     }
 
     SMXDevice &operator=(SMXDevice &&other) noexcept
@@ -178,9 +185,16 @@ public:
             m_bSendConfig = other.m_bSendConfig;
             m_bSendingConfig = other.m_bSendingConfig;
             m_fDelayConfigUpdatesUntil = other.m_fDelayConfigUpdatesUntil;
+            m_SensorTestMode = other.m_SensorTestMode;
+            m_WaitingForSensorTestModeResponse = other.m_WaitingForSensorTestModeResponse;
+            m_fSentSensorTestModeRequestAt = other.m_fSentSensorTestModeRequestAt;
+            m_SensorTestData = other.m_SensorTestData;
+            m_bHaveSensorTestData = other.m_bHaveSensorTestData;
             other.m_bHaveConfig = false;
             other.m_bSendConfig = false;
             other.m_bSendingConfig = false;
+            other.m_SensorTestMode = SensorTestMode_Off;
+            other.m_bHaveSensorTestData = false;
         }
         return *this;
     }
@@ -340,6 +354,24 @@ public:
         m_bSendConfig = true;
     }
 
+    /// Sets the sensor test mode for this device.
+    void SetSensorTestMode(SensorTestMode mode)
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        m_SensorTestMode = mode;
+    }
+
+    /// Retrieves the most recent sensor test data.
+    /// @return True if data is available.
+    bool GetTestData(SMXSensorTestModeData &data) const
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_bHaveSensorTestData)
+            return false;
+        data = m_SensorTestData;
+        return true;
+    }
+
     /// Triggers an immediate sensor recalibration on this device.
     void ForceRecalibration()
     {
@@ -371,6 +403,7 @@ public:
 
         CheckActive();
         SendConfig();
+        UpdateSensorTestMode();
 
         m_Connection.Update(sError);
         if(!sError.empty())
@@ -409,6 +442,12 @@ private:
         {
             if(buf.empty())
                 continue;
+
+            if(buf[0] == 'y')
+            {
+                HandleSensorTestDataResponse(buf);
+                continue;
+            }
 
             // We currently only handle g/G packets.
             if(buf[0] != 'g' && buf[0] != 'G')
@@ -501,6 +540,117 @@ private:
         m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
     }
 
+    /// Sends a sensor test mode request if one is active and no request is outstanding.
+    void UpdateSensorTestMode()
+    {
+        if(m_SensorTestMode == SensorTestMode_Off)
+            return;
+
+        if(m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
+        {
+            // Timeout after 2 seconds.
+            if(GetMonotonicTime() - m_fSentSensorTestModeRequestAt < 2.0)
+                return;
+        }
+
+        m_WaitingForSensorTestModeResponse = m_SensorTestMode;
+        m_fSentSensorTestModeRequestAt = GetMonotonicTime();
+        m_Connection.SendCommand(ssprintf("y%c\n", m_SensorTestMode));
+    }
+
+    /// Handles a 'y' sensor test data response packet.
+    void HandleSensorTestDataResponse(const string &buf)
+    {
+        if(buf.size() < 3)
+            return;
+
+        uint8_t iSize = static_cast<uint8_t>(buf[2]);
+        if(static_cast<int>(buf.size()) < iSize * 2 + 3)
+            return;
+
+        SensorTestMode iMode = static_cast<SensorTestMode>(buf[1]);
+
+        // Parse interleaved uint16_t data.
+        vector<uint16_t> data;
+        for(int i = 3; i < iSize * 2 + 3; i += 2)
+        {
+            uint16_t iValue = static_cast<uint8_t>(buf[i]) |
+                              (static_cast<uint8_t>(buf[i+1]) << 8);
+            data.push_back(iValue);
+        }
+
+        if(m_WaitingForSensorTestModeResponse == SensorTestMode_Off)
+            return;
+        if(iMode != m_WaitingForSensorTestModeResponse)
+            return;
+
+        m_WaitingForSensorTestModeResponse = SensorTestMode_Off;
+
+        if(iMode != m_SensorTestMode)
+            return;
+
+#pragma pack(push, 1)
+        struct detail_data {
+            uint8_t sig1:1, sig2:1, sig3:1;
+            uint8_t bad_sensor_0:1, bad_sensor_1:1, bad_sensor_2:1, bad_sensor_3:1;
+            uint8_t dummy:1;
+            int16_t sensors[4];
+            uint8_t dip:4;
+            uint8_t bad_sensor_dip_0:1, bad_sensor_dip_1:1, bad_sensor_dip_2:1, bad_sensor_dip_3:1;
+        };
+#pragma pack(pop)
+
+        SMXSensorTestModeData &output = m_SensorTestData;
+        memset(&output, 0, sizeof(output));
+
+        int iFwVersion = m_Connection.GetDeviceInfo().m_iFirmwareVersion;
+        for(int iPanel = 0; iPanel < 9; iPanel++)
+        {
+            detail_data pad_data;
+            // Extract bits for this panel from interleaved data.
+            uint8_t *p = reinterpret_cast<uint8_t*>(&pad_data);
+            for(int i = 0; i < static_cast<int>(sizeof(pad_data)); i++)
+            {
+                uint8_t result = 0;
+                for(int j = 0; j < 8; j++)
+                {
+                    int iBit = i * 8 + j;
+                    if(iBit < static_cast<int>(data.size()))
+                        result |= ((data[iBit] >> iPanel) & 1) << j;
+                }
+                p[i] = result;
+            }
+
+            if(pad_data.sig1 != 0 || pad_data.sig2 != 1 || pad_data.sig3 != 0)
+            {
+                output.bHaveDataFromPanel[iPanel] = false;
+                continue;
+            }
+            output.bHaveDataFromPanel[iPanel] = true;
+
+            output.bBadSensorInput[iPanel][0] = pad_data.bad_sensor_0;
+            output.bBadSensorInput[iPanel][1] = pad_data.bad_sensor_1;
+            output.bBadSensorInput[iPanel][2] = pad_data.bad_sensor_2;
+            output.bBadSensorInput[iPanel][3] = pad_data.bad_sensor_3;
+            output.iDIPSwitchPerPanel[iPanel] = pad_data.dip;
+            output.iBadJumper[iPanel][0] = pad_data.bad_sensor_dip_0;
+            output.iBadJumper[iPanel][1] = pad_data.bad_sensor_dip_1;
+            output.iBadJumper[iPanel][2] = pad_data.bad_sensor_dip_2;
+            output.iBadJumper[iPanel][3] = pad_data.bad_sensor_dip_3;
+
+            // Disable bad sensor flags for FSRs (activates spuriously).
+            if(iFwVersion >= 5)
+                for(int s = 0; s < 4; s++)
+                    output.bBadSensorInput[iPanel][s] = false;
+
+            for(int s = 0; s < 4; s++)
+                output.sensorLevel[iPanel][s] = pad_data.sensors[s];
+        }
+
+        m_bHaveSensorTestData = true;
+        CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_SensorTestData));
+    }
+
     recursive_mutex *m_pLock = nullptr;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
     SMXDeviceConnection m_Connection;
@@ -510,6 +660,11 @@ private:
     bool m_bSendConfig = false;
     bool m_bSendingConfig = false;
     double m_fDelayConfigUpdatesUntil = 0;
+    SensorTestMode m_SensorTestMode = SensorTestMode_Off;
+    SensorTestMode m_WaitingForSensorTestModeResponse = SensorTestMode_Off;
+    double m_fSentSensorTestModeRequestAt = 0;
+    SMXSensorTestModeData m_SensorTestData{};
+    bool m_bHaveSensorTestData = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1153,23 @@ SMX_API void SMX_SetPlatformLights(const char *pLightData)
 SMX_API void SMX_SetPanelTestMode(PanelTestMode mode)
 {
     if(g_pSMX) g_pSMX->SetPanelTestMode(mode);
+}
+
+/// Sets the sensor test mode for a pad.
+SMX_API void SMX_SetTestMode(const int pad, SensorTestMode mode)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->SetSensorTestMode(mode);
+}
+
+/// Retrieves the most recent sensor test data for a pad.
+SMX_API bool SMX_GetTestData(const int pad, SMXSensorTestModeData *data)
+{
+    if(!g_pSMX || !data) return false;
+    const auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) return false;
+    return dev->GetTestData(*data);
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)

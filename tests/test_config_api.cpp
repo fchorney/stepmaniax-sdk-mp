@@ -468,3 +468,58 @@ TEST_CASE("SMX_SetPlatformLights skips device with fw < 4") {
 
     SMX_Stop();
 }
+
+// =========================================================================
+// SMX_SetTestMode / SMX_GetTestData tests
+// =========================================================================
+
+TEST_CASE("SMX_GetTestData returns false when no data available") {
+    auto pEnum = new FakeHIDEnumerator();
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXSensorTestModeData data = {};
+    CHECK_FALSE(SMX_GetTestData(0, &data));
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetTestMode sends y command to device") {
+    SMXConfig deviceConfig = {};
+    deviceConfig.masterVersion = 5;
+
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
+    pFakeDevice->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+
+    SMX_SetTestMode(0, SensorTestMode_CalibratedValues);
+
+    // Wait for the 'y' command to be sent
+    bool bWriteSent = WaitFor([&]() {
+        auto writes = pFakeDevice->GetCapturedWrites();
+        for(const auto &w : writes)
+            if(w.size() >= 6 && w[0] == HID_REPORT_COMMAND && w[3] == 'y' && w[4] == '1')
+                return true;
+        return false;
+    });
+    CHECK(bWriteSent);
+
+    SMX_SetTestMode(0, SensorTestMode_Off);
+    SMX_Stop();
+}
