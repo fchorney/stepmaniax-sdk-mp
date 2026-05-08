@@ -2,10 +2,36 @@
 
 #include <algorithm>
 #include <cstring>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 using namespace std;
 
 namespace SMX {
+
+// Create directory and parents (like mkdir -p).
+static void CreateDirectoryRecursive(const string &sPath)
+{
+    for(size_t i = 1; i < sPath.size(); i++)
+    {
+        if(sPath[i] == '/' || sPath[i] == '\\')
+        {
+            string sDir = sPath.substr(0, i);
+#ifdef _WIN32
+            _mkdir(sDir.c_str());
+#else
+            mkdir(sDir.c_str(), 0755);
+#endif
+        }
+    }
+#ifdef _WIN32
+    _mkdir(sPath.c_str());
+#else
+    mkdir(sPath.c_str(), 0755);
+#endif
+}
 
 // --- RecordingHIDDevice ---
 
@@ -70,6 +96,7 @@ RecordingHIDEnumerator::RecordingHIDEnumerator(unique_ptr<IHIDEnumerator> pEnume
     : m_pEnumerator(std::move(pEnumerator))
     , m_sOutputDir(sOutputDir)
 {
+    CreateDirectoryRecursive(sOutputDir);
 }
 
 void RecordingHIDEnumerator::Init() { m_pEnumerator->Init(); }

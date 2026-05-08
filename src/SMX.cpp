@@ -154,9 +154,22 @@ public:
         m_pUpdateCallback(std::move(other.m_pUpdateCallback)),
         m_Connection(std::move(other.m_Connection)),
         m_Config(other.m_Config),
-        m_bHaveConfig(other.m_bHaveConfig)
+        m_WantedConfig(other.m_WantedConfig),
+        m_bHaveConfig(other.m_bHaveConfig),
+        m_bSendConfig(other.m_bSendConfig),
+        m_bSendingConfig(other.m_bSendingConfig),
+        m_fDelayConfigUpdatesUntil(other.m_fDelayConfigUpdatesUntil),
+        m_SensorTestMode(other.m_SensorTestMode),
+        m_WaitingForSensorTestModeResponse(other.m_WaitingForSensorTestModeResponse),
+        m_fSentSensorTestModeRequestAt(other.m_fSentSensorTestModeRequestAt),
+        m_SensorTestData(other.m_SensorTestData),
+        m_bHaveSensorTestData(other.m_bHaveSensorTestData)
     {
         other.m_bHaveConfig = false;
+        other.m_bSendConfig = false;
+        other.m_bSendingConfig = false;
+        other.m_SensorTestMode = SensorTestMode_Off;
+        other.m_bHaveSensorTestData = false;
     }
 
     SMXDevice &operator=(SMXDevice &&other) noexcept
@@ -167,8 +180,21 @@ public:
             m_pUpdateCallback = std::move(other.m_pUpdateCallback);
             m_Connection = std::move(other.m_Connection);
             m_Config = other.m_Config;
+            m_WantedConfig = other.m_WantedConfig;
             m_bHaveConfig = other.m_bHaveConfig;
+            m_bSendConfig = other.m_bSendConfig;
+            m_bSendingConfig = other.m_bSendingConfig;
+            m_fDelayConfigUpdatesUntil = other.m_fDelayConfigUpdatesUntil;
+            m_SensorTestMode = other.m_SensorTestMode;
+            m_WaitingForSensorTestModeResponse = other.m_WaitingForSensorTestModeResponse;
+            m_fSentSensorTestModeRequestAt = other.m_fSentSensorTestModeRequestAt;
+            m_SensorTestData = other.m_SensorTestData;
+            m_bHaveSensorTestData = other.m_bHaveSensorTestData;
             other.m_bHaveConfig = false;
+            other.m_bSendConfig = false;
+            other.m_bSendingConfig = false;
+            other.m_SensorTestMode = SensorTestMode_Off;
+            other.m_bHaveSensorTestData = false;
         }
         return *this;
     }
@@ -290,6 +316,72 @@ public:
         return m_Connection.GetInputState();
     }
 
+    /// Resets the device to factory default configuration.
+    /// Sends the factory reset command, then re-reads the config from the device.
+    void FactoryReset()
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_Connection.IsConnected())
+            return;
+
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+        m_Connection.SendCommand("f\n");
+        m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
+    }
+
+    /// Retrieves the current device configuration.
+    /// If a SetConfig write is pending, returns the pending config (optimistic read).
+    /// @param config [out] SMXConfig structure to be filled.
+    /// @return True if config is available (device connected with config read).
+    bool GetConfig(SMXConfig &config) const
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!IsConnectedLocked())
+            return false;
+        config = m_bSendConfig ? m_WantedConfig : m_Config;
+        return true;
+    }
+
+    /// Queues a new configuration to be written to the device.
+    /// The write is rate-limited to once per second to prevent EEPROM wear.
+    /// @param config The configuration to write.
+    void SetConfig(const SMXConfig &config)
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!IsConnectedLocked())
+            return;
+        m_WantedConfig = config;
+        m_bSendConfig = true;
+    }
+
+    /// Sets the sensor test mode for this device.
+    void SetSensorTestMode(SensorTestMode mode)
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        m_SensorTestMode = mode;
+    }
+
+    /// Retrieves the most recent sensor test data.
+    /// @return True if data is available.
+    bool GetTestData(SMXSensorTestModeData &data) const
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_bHaveSensorTestData)
+            return false;
+        data = m_SensorTestData;
+        return true;
+    }
+
+    /// Triggers an immediate sensor recalibration on this device.
+    void ForceRecalibration()
+    {
+        lock_guard<recursive_mutex> lock(*m_pLock);
+        if(!m_Connection.IsConnected())
+            return;
+
+        m_Connection.SendCommand("C\n");
+    }
+
     /// Fires the Connected callback for this device using the given slot index.
     /// Called by the manager after device ordering is corrected.
     void FireConnectedCallback(int pad) const
@@ -310,6 +402,8 @@ public:
             return;
 
         CheckActive();
+        SendConfig();
+        UpdateSensorTestMode();
 
         m_Connection.Update(sError);
         if(!sError.empty())
@@ -348,6 +442,12 @@ private:
         {
             if(buf.empty())
                 continue;
+
+            if(buf[0] == 'y')
+            {
+                HandleSensorTestDataResponse(buf);
+                continue;
+            }
 
             // We currently only handle g/G packets.
             if(buf[0] != 'g' && buf[0] != 'G')
@@ -391,11 +491,180 @@ private:
         m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
     }
 
+    /// Sends pending config to the device if conditions are met.
+    /// Rate-limited to once per second to prevent EEPROM wear.
+    void SendConfig()
+    {
+        if(!m_Connection.IsConnected() || !m_bSendConfig || m_bSendingConfig)
+            return;
+        if(!m_bHaveConfig)
+            return;
+
+        // Rate limit: don't write more than once per second.
+        double fNow = GetMonotonicTime();
+        if(m_fDelayConfigUpdatesUntil > fNow)
+            return;
+        m_fDelayConfigUpdatesUntil = fNow + 1.0;
+
+        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
+
+        string sData;
+        if(di.m_iFirmwareVersion >= 5)
+        {
+            sData = "W";
+            uint8_t iSize = sizeof(SMXConfig);
+            sData.append(reinterpret_cast<char*>(&iSize), 1);
+            sData.append(reinterpret_cast<const char*>(&m_WantedConfig), sizeof(SMXConfig));
+        }
+        else
+        {
+            sData = "w";
+            vector<uint8_t> outputConfig(reinterpret_cast<const uint8_t*>(&m_Config),
+                                         reinterpret_cast<const uint8_t*>(&m_Config) + sizeof(SMXConfig));
+            ConvertToOldConfig(m_WantedConfig, outputConfig);
+            uint8_t iSize = static_cast<uint8_t>(outputConfig.size());
+            sData.append(reinterpret_cast<char*>(&iSize), 1);
+            sData.append(reinterpret_cast<const char*>(outputConfig.data()), outputConfig.size());
+        }
+
+        m_bSendingConfig = true;
+        m_Connection.SendCommand(sData, [this](string) {
+            m_bSendingConfig = false;
+        });
+        m_bSendConfig = false;
+
+        // Update cached config optimistically.
+        m_Config = m_WantedConfig;
+
+        // Read back to verify.
+        m_Connection.SendCommand(di.m_iFirmwareVersion >= 5 ? "G" : "g\n");
+    }
+
+    /// Sends a sensor test mode request if one is active and no request is outstanding.
+    void UpdateSensorTestMode()
+    {
+        if(m_SensorTestMode == SensorTestMode_Off)
+            return;
+
+        if(m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
+        {
+            // Timeout after 2 seconds.
+            if(GetMonotonicTime() - m_fSentSensorTestModeRequestAt < 2.0)
+                return;
+        }
+
+        m_WaitingForSensorTestModeResponse = m_SensorTestMode;
+        m_fSentSensorTestModeRequestAt = GetMonotonicTime();
+        m_Connection.SendCommand(ssprintf("y%c\n", m_SensorTestMode));
+    }
+
+    /// Handles a 'y' sensor test data response packet.
+    void HandleSensorTestDataResponse(const string &buf)
+    {
+        if(buf.size() < 3)
+            return;
+
+        uint8_t iSize = static_cast<uint8_t>(buf[2]);
+        if(static_cast<int>(buf.size()) < iSize * 2 + 3)
+            return;
+
+        SensorTestMode iMode = static_cast<SensorTestMode>(buf[1]);
+
+        // Parse interleaved uint16_t data.
+        vector<uint16_t> data;
+        for(int i = 3; i < iSize * 2 + 3; i += 2)
+        {
+            uint16_t iValue = static_cast<uint8_t>(buf[i]) |
+                              (static_cast<uint8_t>(buf[i+1]) << 8);
+            data.push_back(iValue);
+        }
+
+        if(m_WaitingForSensorTestModeResponse == SensorTestMode_Off)
+            return;
+        if(iMode != m_WaitingForSensorTestModeResponse)
+            return;
+
+        m_WaitingForSensorTestModeResponse = SensorTestMode_Off;
+
+        if(iMode != m_SensorTestMode)
+            return;
+
+#pragma pack(push, 1)
+        struct detail_data {
+            uint8_t sig1:1, sig2:1, sig3:1;
+            uint8_t bad_sensor_0:1, bad_sensor_1:1, bad_sensor_2:1, bad_sensor_3:1;
+            uint8_t dummy:1;
+            int16_t sensors[4];
+            uint8_t dip:4;
+            uint8_t bad_sensor_dip_0:1, bad_sensor_dip_1:1, bad_sensor_dip_2:1, bad_sensor_dip_3:1;
+        };
+#pragma pack(pop)
+
+        SMXSensorTestModeData &output = m_SensorTestData;
+        memset(&output, 0, sizeof(output));
+
+        int iFwVersion = m_Connection.GetDeviceInfo().m_iFirmwareVersion;
+        for(int iPanel = 0; iPanel < 9; iPanel++)
+        {
+            detail_data pad_data;
+            // Extract bits for this panel from interleaved data.
+            uint8_t *p = reinterpret_cast<uint8_t*>(&pad_data);
+            for(int i = 0; i < static_cast<int>(sizeof(pad_data)); i++)
+            {
+                uint8_t result = 0;
+                for(int j = 0; j < 8; j++)
+                {
+                    int iBit = i * 8 + j;
+                    if(iBit < static_cast<int>(data.size()))
+                        result |= ((data[iBit] >> iPanel) & 1) << j;
+                }
+                p[i] = result;
+            }
+
+            if(pad_data.sig1 != 0 || pad_data.sig2 != 1 || pad_data.sig3 != 0)
+            {
+                output.bHaveDataFromPanel[iPanel] = false;
+                continue;
+            }
+            output.bHaveDataFromPanel[iPanel] = true;
+
+            output.bBadSensorInput[iPanel][0] = pad_data.bad_sensor_0;
+            output.bBadSensorInput[iPanel][1] = pad_data.bad_sensor_1;
+            output.bBadSensorInput[iPanel][2] = pad_data.bad_sensor_2;
+            output.bBadSensorInput[iPanel][3] = pad_data.bad_sensor_3;
+            output.iDIPSwitchPerPanel[iPanel] = pad_data.dip;
+            output.iBadJumper[iPanel][0] = pad_data.bad_sensor_dip_0;
+            output.iBadJumper[iPanel][1] = pad_data.bad_sensor_dip_1;
+            output.iBadJumper[iPanel][2] = pad_data.bad_sensor_dip_2;
+            output.iBadJumper[iPanel][3] = pad_data.bad_sensor_dip_3;
+
+            // Disable bad sensor flags for FSRs (activates spuriously).
+            if(iFwVersion >= 5)
+                for(int s = 0; s < 4; s++)
+                    output.bBadSensorInput[iPanel][s] = false;
+
+            for(int s = 0; s < 4; s++)
+                output.sensorLevel[iPanel][s] = pad_data.sensors[s];
+        }
+
+        m_bHaveSensorTestData = true;
+        CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_SensorTestData));
+    }
+
     recursive_mutex *m_pLock = nullptr;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
+    SMXConfig m_WantedConfig;
     bool m_bHaveConfig = false;
+    bool m_bSendConfig = false;
+    bool m_bSendingConfig = false;
+    double m_fDelayConfigUpdatesUntil = 0;
+    SensorTestMode m_SensorTestMode = SensorTestMode_Off;
+    SensorTestMode m_WaitingForSensorTestModeResponse = SensorTestMode_Off;
+    double m_fSentSensorTestModeRequestAt = 0;
+    SMXSensorTestModeData m_SensorTestData{};
+    bool m_bHaveSensorTestData = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -493,6 +762,43 @@ public:
         m_iUSBPollingSleepUs.store(iUSBPollingUs);
     }
 
+    void ReenableAutoLights()
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        for(auto & m_Device : m_Devices)
+            m_Device.SendCommand(string("S 1\n", 4));
+    }
+
+    void SetPlatformLights(const char *pLightData)
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        for(int iPad = 0; iPad < 2; iPad++)
+        {
+            if(!m_Devices[iPad].IsConnected())
+                continue;
+
+            SMXConfig config;
+            if(!m_Devices[iPad].GetConfig(config))
+                continue;
+            if(config.masterVersion < 4)
+                continue;
+
+            string sCmd;
+            sCmd.push_back('L');
+            sCmd.push_back(0);   // strip index
+            sCmd.push_back(44);  // number of LEDs
+            sCmd.append(pLightData + iPad * 44 * 3, 44 * 3);
+            m_Devices[iPad].SendCommand(sCmd);
+        }
+    }
+
+    void SetPanelTestMode(PanelTestMode mode)
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        m_PanelTestMode = mode;
+        m_Cond.notify_all();
+    }
+
     void SetInputStateMode(bool bAlwaysFire)
     {
         for(auto & m_Device : m_Devices)
@@ -586,10 +892,30 @@ private:
                     m_Devices[i].FireConnectedCallback(i);
             }
 
+            UpdatePanelTestMode();
+
             // Wait for Report 6 data from USB polling thread, or timeout.
             m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
         }
         m_Lock.unlock();
+    }
+
+    /// Periodically resends the panel test mode command to keep it active.
+    /// The device times out after ~1 second without a refresh.
+    void UpdatePanelTestMode()
+    {
+        if(m_PanelTestMode == m_LastSentPanelTestMode &&
+           (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < 1.0))
+            return;
+
+        // TODO: When transitioning from Off to active (m_LastSentPanelTestMode == PanelTestMode_Off),
+        // send a lights-off command ("l" + 108 zero bytes + "\n") to clear panels before entering
+        // test mode. This matches the original SDK behavior. Requires lighting commands to be implemented first.
+
+        m_fLastPanelTestModeSentAt = GetMonotonicTime();
+        m_LastSentPanelTestMode = m_PanelTestMode;
+        for(auto & m_Device : m_Devices)
+            m_Device.SendCommand(ssprintf("t %c\n", m_PanelTestMode));
     }
 
     /// Enumerates all HID devices matching the SMX vendor ID and product ID.
@@ -678,6 +1004,9 @@ private:
     SMXDevice m_Devices[2];
     function<void(int, SMXUpdateCallbackReason)> m_Callback;
     unique_ptr<IHIDEnumerator> m_pEnumerator;
+    PanelTestMode m_PanelTestMode = PanelTestMode_Off;
+    PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
+    double m_fLastPanelTestModeSentAt = 0;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -745,6 +1074,28 @@ SMX_API void SMX_GetInfo(const int pad, SMXInfo *info)
     if(dev) dev->GetInfo(*info);
 }
 
+/// Retrieves the current configuration for a device.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config [out] Pointer to SMXConfig structure to be filled.
+/// @return True if config was retrieved, false if device is not connected.
+SMX_API bool SMX_GetConfig(const int pad, SMXConfig *config)
+{
+    if(!g_pSMX || !config) return false;
+    const auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) return false;
+    return dev->GetConfig(*config);
+}
+
+/// Writes a new configuration to a device.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config Pointer to the SMXConfig to write.
+SMX_API void SMX_SetConfig(const int pad, const SMXConfig *config)
+{
+    if(!g_pSMX || !config) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->SetConfig(*config);
+}
+
 /// Retrieves the current input state (pressed panels) for a device.
 /// The returned value is a 16-bit bitmask where each bit corresponds to a panel.
 /// @param pad Device index (0 for Player 1, 1 for Player 2).
@@ -763,6 +1114,62 @@ SMX_API uint16_t SMX_GetInputState(const int pad)
 SMX_API void SMX_SetSerialNumbers()
 {
     if(g_pSMX) g_pSMX->SetSerialNumbers();
+}
+
+/// Resets a pad to its factory default configuration.
+/// The operation is asynchronous; the ConfigUpdated callback will fire when complete.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_FactoryReset(const int pad)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->FactoryReset();
+}
+
+/// Triggers an immediate sensor recalibration on the specified pad.
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_ForceRecalibration(const int pad)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->ForceRecalibration();
+}
+
+/// Re-enables automatic panel lighting on both pads.
+SMX_API void SMX_ReenableAutoLights()
+{
+    if(g_pSMX) g_pSMX->ReenableAutoLights();
+}
+
+/// Sets the platform edge LED strip colors for both pads.
+SMX_API void SMX_SetPlatformLights(const char *pLightData)
+{
+    if(!g_pSMX || !pLightData) return;
+    g_pSMX->SetPlatformLights(pLightData);
+}
+
+/// Sets a panel test mode on all connected pads.
+/// The SDK periodically resends the command to keep the mode active.
+SMX_API void SMX_SetPanelTestMode(PanelTestMode mode)
+{
+    if(g_pSMX) g_pSMX->SetPanelTestMode(mode);
+}
+
+/// Sets the sensor test mode for a pad.
+SMX_API void SMX_SetTestMode(const int pad, SensorTestMode mode)
+{
+    if(!g_pSMX) return;
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(dev) dev->SetSensorTestMode(mode);
+}
+
+/// Retrieves the most recent sensor test data for a pad.
+SMX_API bool SMX_GetTestData(const int pad, SMXSensorTestModeData *data)
+{
+    if(!g_pSMX || !data) return false;
+    const auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) return false;
+    return dev->GetTestData(*data);
 }
 
 SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)

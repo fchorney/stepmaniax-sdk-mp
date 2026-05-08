@@ -2,6 +2,8 @@
 #define SMX_H
 
 #include <cstdint>
+#include <cstring>
+#include <cmath>
 
 #ifdef SMX_EXPORTS
     #ifdef _WIN32
@@ -20,6 +22,105 @@
 #define SERIAL_SIZE 16
 
 struct SMXInfo;
+
+/// Bits for SMXConfig::flags (masterVersion >= 4).
+enum SMXConfigFlags {
+    // If set, panels will use the pressed animation when pressed, and stepColor
+    // is ignored. If unset, panels will be lit solid using stepColor.
+    PlatformFlags_AutoLightingUsePressedAnimations = 1 << 0,
+
+    // If set, panels are using FSRs, otherwise load cells.
+    PlatformFlags_FSR = 1 << 1,
+};
+
+/// Packed sensor settings for a single panel.
+/// Contains low/high thresholds for load cell and FSR sensors,
+/// as well as combined (multi-sensor) thresholds.
+#pragma pack(push, 1)
+struct packed_sensor_settings_t {
+    // Load cell thresholds:
+    uint8_t loadCellLowThreshold;
+    uint8_t loadCellHighThreshold;
+
+    // FSR (Force Sensitive Resistor) thresholds:
+    uint8_t fsrLowThreshold[4];
+    uint8_t fsrHighThreshold[4];
+
+    uint16_t combinedLowThreshold;
+    uint16_t combinedHighThreshold;
+
+    // This must be left unchanged.
+    uint16_t reserved;
+};
+#pragma pack(pop)
+
+/// Configuration state for an SMX device.
+/// The order and packing of this struct corresponds to the configuration packet sent to
+/// the master controller, so it must not be changed.
+///
+/// Read with SMX_GetConfig(). Write with SMX_SetConfig().
+#pragma pack(push, 1)
+struct SMXConfig
+{
+    // The firmware version of the master controller. Where supported (version 2+), this
+    // will always read back the firmware version. Defaults to 0xFF on version 1.
+    // We always write 0xFF here so it doesn't change on that firmware version.
+    uint8_t masterVersion = 0xFF;
+
+    // The version of this config packet. This can be used by the firmware to know which
+    // values have been filled in. Unrelated to firmware version.
+    // Versions: 0xFF=pre-versioning, 0x00=first, 0x02=per-panel thresholds,
+    //           0x03=debounceDelayMs added, 0x05=current (packed_sensor_settings_t)
+    uint8_t configVersion = 0x05;
+
+    // Packed flags (masterVersion >= 4).
+    uint8_t flags = 0;
+
+    // These are internal tunables and should be left unchanged.
+    uint16_t debounceNodelayMilliseconds = 0;
+    uint16_t debounceDelayMilliseconds = 0;
+    uint16_t panelDebounceMicroseconds = 4000;
+    uint8_t autoCalibrationMaxDeviation = 100;
+    uint8_t badSensorMinimumDelaySeconds = 15;
+    uint16_t autoCalibrationAveragesPerUpdate = 60;
+    uint16_t autoCalibrationSamplesPerAverage = 500;
+
+    // The maximum tare value to calibrate to (except on startup).
+    uint16_t autoCalibrationMaxTare = 0xFFFF;
+
+    // Which sensors on each panel to enable. Packed with four sensors on two pads per byte:
+    // enabledSensors[0] & 1 is the first sensor on the first pad, and so on.
+    uint8_t enabledSensors[5]{};
+
+    // How long the master controller will wait for a lights command before resuming
+    // auto-lights. In 128ms units.
+    uint8_t autoLightsTimeout = 1000/128;
+
+    // The color to use for each panel when auto-lighting in master mode.
+    // These colors should be scaled to the 0-170 range.
+    uint8_t stepColor[3*9]{};
+
+    // The default color to set the platform LED strip to.
+    uint8_t platformStripColor[3]{};
+
+    // Which panels to enable auto-lighting for. Disabled panels will be unlit.
+    // 0x01 = panel 0, 0x02 = panel 1, 0x04 = panel 2, etc.
+    uint16_t autoLightPanelMask = 0xFFFF;
+
+    // The rotation of the panel (0-3, 90° increments). Currently unused.
+    uint8_t panelRotation{};
+
+    // Per-panel sensor settings:
+    packed_sensor_settings_t panelSettings[9]{};
+
+    // Internal tunable; should be left unchanged.
+    uint8_t preDetailsDelayMilliseconds = 5;
+
+    // Pad the struct to 250 bytes. This keeps the struct size stable as fields are added.
+    // Applications should leave any data in here unchanged when calling SMX_SetConfig.
+    uint8_t padding[49]{};
+};
+#pragma pack(pop)
 
 // All functions are nonblocking. Getters return the most recent state.
 // Setters return immediately and do their work in the background.
@@ -45,6 +146,10 @@ enum SMXUpdateCallbackReason : uint32_t {
 
     /// Device configuration has been received or updated.
     SMXUpdateCallback_ConfigUpdated = 1 << 4,
+
+    /// New sensor test data has been received.
+    /// Call SMX_GetTestData() to retrieve the data.
+    SMXUpdateCallback_SensorTestData = 1 << 5,
 };
 
 // Helper macro for checking if a reason includes a specific flag
@@ -109,6 +214,29 @@ SMX_API void SMX_SetLogCallback(SMXLogCallback callback);
 ///            If pad is invalid or device is not connected, all fields are zeroed.
 SMX_API void SMX_GetInfo(int pad, SMXInfo *info);
 
+/// Retrieves the current configuration for a device.
+/// Returns true if the config was successfully retrieved (device is connected and
+/// config has been read). Returns false if the device is not connected.
+///
+/// If SMX_SetConfig was called but the write hasn't completed yet, this returns
+/// the pending config (optimistic read).
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config [out] Pointer to SMXConfig structure to be filled.
+/// @return True if config was retrieved, false if device is not connected.
+SMX_API bool SMX_GetConfig(int pad, SMXConfig *config);
+
+/// Writes a new configuration to a device.
+/// The write is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire
+/// when the device acknowledges the new configuration.
+///
+/// Config writes are rate-limited to once per second to prevent excess EEPROM wear.
+/// If called more frequently, only the most recent config is sent after the cooldown.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param config Pointer to the SMXConfig to write.
+SMX_API void SMX_SetConfig(int pad, const SMXConfig *config);
+
 /// Retrieves the current input state (pressed panels) for a device.
 /// The returned value is a 16-bit bitmask where each bit corresponds to a panel.
 /// Bit positions correspond to the 16 panels on an SMX device.
@@ -125,6 +253,135 @@ SMX_API uint16_t SMX_GetInputState(int pad);
 ///
 /// Note: Devices without a serial number show a hex string of all zeros or all F's.
 SMX_API void SMX_SetSerialNumbers();
+
+/// Resets a pad to its factory default configuration.
+/// This sends a reset command to the device and re-reads the resulting configuration.
+/// The operation is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire
+/// when the new configuration has been read back from the device.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_FactoryReset(int pad);
+
+/// Requests an immediate sensor recalibration on the specified pad.
+/// This is normally not necessary, but can be helpful for diagnostics.
+/// The operation is asynchronous and completes in the background.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_ForceRecalibration(int pad);
+
+/// Re-enables automatic panel lighting on both pads.
+/// By default, panels light automatically when stepped on. If an application sends
+/// lighting commands, auto-lighting is disabled. Call this to immediately re-enable it
+/// without waiting for the timeout period to elapse.
+SMX_API void SMX_ReenableAutoLights();
+
+/// Sets the platform edge LED strip colors for both pads.
+/// The input buffer contains 88 RGB triplets (264 bytes total): the first 44 LEDs
+/// (132 bytes) are for pad 0, the second 44 LEDs (132 bytes) are for pad 1.
+/// Requires firmware v4+. Disables auto-lighting until timeout or SMX_ReenableAutoLights.
+///
+/// @param pLightData Pointer to 264 bytes of RGB data (88 LEDs × 3 bytes each).
+SMX_API void SMX_SetPlatformLights(const char *pLightData);
+
+/// Panel-side diagnostic test modes.
+/// These activate debug lighting on the panels and don't return data to the host.
+/// Lights cannot be updated while a panel test mode is active.
+enum PanelTestMode {
+    PanelTestMode_Off = '0',
+    PanelTestMode_PressureTest = '1',
+};
+
+/// Sensor test modes for reading raw/calibrated sensor values.
+/// The values (except Off) correspond with the protocol and must not be changed.
+enum SensorTestMode {
+    SensorTestMode_Off = 0,
+    // Return the raw, uncalibrated value of each sensor.
+    SensorTestMode_UncalibratedValues = '0',
+    // Return the calibrated value of each sensor.
+    SensorTestMode_CalibratedValues = '1',
+    // Return the sensor noise value.
+    SensorTestMode_Noise = '2',
+    // Return the sensor tare value.
+    SensorTestMode_Tare = '3',
+};
+
+/// Sensor test mode data returned by SMX_GetTestData.
+/// Contains per-panel sensor readings and diagnostic information.
+struct SMXSensorTestModeData
+{
+    // If false, we didn't receive a response from that panel.
+    bool bHaveDataFromPanel[9];
+
+    // Sensor readings for each panel. The meaning depends on the active SensorTestMode:
+    //   UncalibratedValues: Raw ADC reading from the sensor (unscaled).
+    //   CalibratedValues:   Value after calibration/tare subtraction. Represents force.
+    //   Noise:              Standard deviation of recent readings, SQUARED.
+    //                       Take sqrt() to get the actual noise level.
+    //   Tare:               The current tare (baseline) value for each sensor.
+    int16_t sensorLevel[9][4];
+
+    // True if a sensor's most recent reading is invalid.
+    bool bBadSensorInput[9][4];
+
+    // The DIP switch settings on each panel (4-bit value).
+    int iDIPSwitchPerPanel[9];
+
+    // Bad sensor selection jumper indication for each sensor on each panel.
+    bool iBadJumper[9][4];
+};
+
+/// Scales a raw sensor test value for display (e.g., in a bar graph).
+/// Applies mode-specific transformations:
+///   - Noise mode: returns sqrt(value) since raw values are variance (std dev squared).
+///   - FSR panels (fw >= 4 with PlatformFlags_FSR): right-shifts by 2 and scales to 0.0-1.0 (max ~250).
+///   - Load cell panels: scales to 0.0-1.0 (max ~500).
+/// Small negative values (-10 to 0) are clamped to 0 (sensor noise artifact).
+///
+/// @param iValue Raw sensor value from SMXSensorTestModeData::sensorLevel.
+/// @param mode The active sensor test mode.
+/// @param bIsFSR True if the panel uses FSR sensors (check config flags & PlatformFlags_FSR, fw >= 4).
+/// @return Normalized value in the range [0.0, 1.0+] suitable for display.
+inline float SMX_ScaleSensorValue(int16_t iValue, SensorTestMode mode, bool bIsFSR)
+{
+    float fValue = static_cast<float>(iValue);
+
+    if(mode == SensorTestMode_Noise)
+        fValue = sqrtf(fValue > 0 ? fValue : 0);
+
+    // Clamp small negative values from noise.
+    if(fValue < 0 && fValue >= -10)
+        fValue = 0;
+
+    if(bIsFSR)
+        return (fValue / 4.0f) / 250.0f;
+    return fValue / 500.0f;
+}
+
+/// Sets a panel test mode on all connected pads.
+/// When enabled, the SDK periodically resends the command to keep the mode active
+/// (the device times out after ~1 second without a refresh).
+/// Lights cannot be updated while a panel test mode is active.
+///
+/// @param mode The test mode to activate, or PanelTestMode_Off to disable.
+SMX_API void SMX_SetPanelTestMode(PanelTestMode mode);
+
+/// Sets the sensor test mode for a pad.
+/// When enabled, the SDK periodically requests sensor data from the device.
+/// Use SMX_GetTestData to retrieve the most recent readings.
+/// Set to SensorTestMode_Off to stop requesting data.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param mode The sensor test mode to activate.
+SMX_API void SMX_SetTestMode(int pad, SensorTestMode mode);
+
+/// Retrieves the most recent sensor test data for a pad.
+/// Returns true if data is available (test mode is active and at least one
+/// response has been received from the device).
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+/// @param data [out] Pointer to SMXSensorTestModeData to be filled.
+/// @return True if data was retrieved, false if no data is available.
+SMX_API bool SMX_GetTestData(int pad, SMXSensorTestModeData *data);
 
 /// Configures the polling rates for the SDK's background threads.
 /// Can be called at any time after SMX_Start().

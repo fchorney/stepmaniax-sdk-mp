@@ -109,6 +109,7 @@ if(BUILD_TESTS)
         tests/test_device_connection.cpp
         tests/test_smx_manager.cpp
         tests/test_config_packet.cpp
+        tests/test_config_api.cpp
         tests/test_helpers.cpp
         tests/test_move_semantics.cpp
         tests/test_replay.cpp

@@ -1,16 +1,50 @@
 # StepManiaX SDK Multi Platform
 
-A minimal, cross-platform SDK for StepManiaX dance pads. Supports device discovery, connection management, player identification, and reading panel input state.
+A minimal, cross-platform SDK for StepManiaX dance pads. This is a library only — it does not include a configuration tool or GUI. Applications and tools can be built on top of it.
 
 ## Features
 
 - Auto-discovers up to 2 connected SMX pads via USB HID
 - Handles connect, disconnect, and reconnect
 - Identifies P1 vs P2 and auto-corrects pad ordering
-- Reads panel press/release state as a bitmask
-- Assigns serial numbers to controllers
-- Reports firmware version
+- Reads panel press/release state as a low-latency bitmask
+- Full device configuration (thresholds, lighting, calibration)
+- Sensor diagnostics (raw/calibrated values, noise, tare)
+- Platform LED strip control
 - Cross-platform: Linux, macOS (Intel & Apple Silicon), Windows
+
+## Feature status
+
+Comparison of features between this SDK and the original StepManiaX SDK.
+
+### Implemented
+
+| Feature | API | Notes |
+|---------|-----|-------|
+| Device discovery & connection | `SMX_Start`, `SMX_Stop` | Auto-discovers up to 2 pads |
+| Log callback | `SMX_SetLogCallback` | |
+| Device info | `SMX_GetInfo` | Connection status, serial, firmware version, player ID |
+| Input state | `SMX_GetInputState` | Panel press/release bitmask |
+| Serial number assignment | `SMX_SetSerialNumbers` | Writes random serial to devices without one |
+| SDK version | `SMX_Version` | |
+| Polling rate configuration | `SMX_SetPollingRate` | *New* — not in original SDK |
+| Input state callback mode | `SMX_SetInputStateMode` | *New* — fire on every packet or only on change |
+| Monotonic time | `SMX_GetMonotonicTime` | *New* — high-resolution elapsed time |
+| Factory reset | `SMX_FactoryReset` | Reset pad to default configuration |
+| Force recalibration | `SMX_ForceRecalibration` | Trigger immediate sensor recalibration |
+| Re-enable auto lights | `SMX_ReenableAutoLights` | Return panels to automatic step lighting |
+| Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
+| Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
+| Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
+| Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
+
+### Not yet implemented
+
+| Feature | Original API | Complexity | Description |
+|---------|-------------|------------|-------------|
+| Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
+| GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
+| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
 
 ## Threading architecture
 
@@ -157,9 +191,9 @@ By default, the build produces a **shared library** (`libsmx-mp.so` / `libsmx-mp
 | `BUILD_INTEGRATION_TESTS` | `OFF` | Build integration tests (require real hardware) |
 
 ```bash
-cmake ..                                  # shared lib only (default)
-cmake .. -DBUILD_SAMPLE=ON               # shared lib + sample
-cmake .. -DBUILD_SHARED_LIBS=OFF         # static lib only
+cmake ..                                            # shared lib only (default)
+cmake .. -DBUILD_SAMPLE=ON                          # shared lib + sample
+cmake .. -DBUILD_SHARED_LIBS=OFF                    # static lib only
 cmake .. -DBUILD_SHARED_LIBS=OFF -DBUILD_SAMPLE=ON  # static lib + sample
 ```
 
@@ -232,6 +266,21 @@ After building, run the sample application:
 # With custom polling rates (main thread ms, USB polling thread us)
 ./smx-sample 50 500
 
+# Fire input callback on every packet (not just state changes)
+./smx-sample --all-packets
+
+# Enable panel pressure test mode (diagnostic LEDs)
+./smx-sample --test-mode
+
+# Combined
+./smx-sample 50 500 --all-packets --test-mode
+
+# Sensor test modes (prints values every 100ms)
+./smx-sample --uncalibrated
+./smx-sample --calibrated
+./smx-sample --noise
+./smx-sample --tare
+
 # Windows (from build directory)
 .\Release\smx-sample.exe   # vcpkg/MSVC
 .\smx-sample.exe            # MSYS2/MinGW
@@ -244,10 +293,11 @@ Example output:
 ```
 SMX SDK Multi Platform v0.1.1
 Scanning for StepManiaX devices... Press Ctrl+C to quit.
-Usage: ./smx-sample [main_thread_ms] [usb_polling_us]
+Usage: ./smx-sample [main_thread_ms] [usb_polling_us] [--all-packets] [--test-mode]
+       [--uncalibrated] [--calibrated] [--noise] [--tare]
 Pad 0 connected (jumper: P1, serial: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d, fw: 5)
-Pad 0: input state 0000
-Pad 0: input state 0010
+ 0.052: Pad 0: input state 0000
+ 0.153: Pad 0: input state 0010
 ```
 
 ## API overview
@@ -265,11 +315,38 @@ void SMX_SetLogCallback(SMXLogCallback callback);
 // Get connection status, serial number, firmware version.
 void SMX_GetInfo(int pad, SMXInfo *info);
 
+// Get current device configuration. Returns true if config is available.
+bool SMX_GetConfig(int pad, SMXConfig *config);
+
+// Write new configuration to device. Async; fires ConfigUpdated callback on completion.
+void SMX_SetConfig(int pad, const SMXConfig *config);
+
 // Get currently pressed panels as a bitmask.
 uint16_t SMX_GetInputState(int pad);
 
 // Assign serial numbers to controllers without one.
 void SMX_SetSerialNumbers();
+
+// Reset pad to factory default configuration.
+void SMX_FactoryReset(int pad);
+
+// Trigger immediate sensor recalibration.
+void SMX_ForceRecalibration(int pad);
+
+// Re-enable automatic panel lighting on both pads.
+void SMX_ReenableAutoLights();
+
+// Set platform edge LED strip colors (88 LEDs × 3 bytes RGB = 264 bytes, firmware v4+).
+void SMX_SetPlatformLights(const char *pLightData);
+
+// Set panel-side diagnostic test mode.
+void SMX_SetPanelTestMode(PanelTestMode mode);
+
+// Set sensor test mode (read raw/calibrated sensor values).
+void SMX_SetTestMode(int pad, SensorTestMode mode);
+
+// Get most recent sensor test data. Returns true if data is available.
+bool SMX_GetTestData(int pad, SMXSensorTestModeData *data);
 
 // Configure thread sleep intervals (main thread ms, USB polling thread us).
 void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
@@ -279,6 +356,9 @@ void SMX_SetInputStateMode(bool bAlwaysFire);
 
 // Get SDK version string.
 const char *SMX_Version();
+
+// Get elapsed time in seconds since SDK was initialized.
+double SMX_GetMonotonicTime();
 ```
 
 `pad` is 0 for player 1, 1 for player 2.
@@ -294,6 +374,7 @@ The `SMXUpdateCallback` receives a `reason` bitmask indicating what triggered th
 | `SMXUpdateCallback_Connected` | `1 << 2` | A pad has become fully connected (device info and config received). |
 | `SMXUpdateCallback_Disconnected` | `1 << 3` | A pad has been disconnected. |
 | `SMXUpdateCallback_ConfigUpdated` | `1 << 4` | Device configuration has been received or updated. |
+| `SMXUpdateCallback_SensorTestData` | `1 << 5` | New sensor test data received. Call `SMX_GetTestData()` for the data. |
 
 Use the `SMX_REASON_IS(reason, flag)` macro to check for specific flags:
 
@@ -374,6 +455,7 @@ Panel: ┌───┬───┬───┐
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp   # Config format conversion tests
+│   ├── test_config_api.cpp      # Config get/set API tests
 │   ├── test_helpers.cpp         # Utility function tests
 │   ├── test_helpers_manager.h    # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
@@ -397,17 +479,6 @@ This abstraction exists for two reasons:
 1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
 
 2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
-
-## Roadmap
-
-This SDK currently implements a subset of the original StepManiaX SDK's functionality. Planned additions include:
-
-- Reading per-panel sensor data
-- Writing pad configuration (thresholds, lighting, etc.)
-- Factory reset
-- Panel test modes
-- GIF Upload
-- and More!
 
 ## Acknowledgments
 

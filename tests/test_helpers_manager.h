@@ -68,16 +68,34 @@ public:
             lock_guard<mutex> lock(m_Mutex);
             m_aCapturedWrites.emplace_back(buf, buf + len);
         }
-        // Auto-respond to activation command ("G" or "g\n") with config
+        // Auto-respond to commands with HOST_CMD_FINISHED so the command queue advances.
         // HID packet format: [report_id=5][flags][size][payload...]
         if(len >= 4 && buf[0] == HID_REPORT_COMMAND && buf[2] >= 1)
         {
             char cmd = static_cast<char>(buf[3]);
             if(cmd == 'G' || cmd == 'g')
             {
+                // Config read: respond with the config packet(s) (includes HOST_CMD_FINISHED)
                 lock_guard<mutex> lock(m_Mutex);
-                if(!m_ConfigResponse.empty())
+                if(!m_aConfigResponsePackets.empty())
+                {
+                    for(const auto &pkt : m_aConfigResponsePackets)
+                        m_aReads.push(pkt);
+                }
+                else if(!m_ConfigResponse.empty())
+                {
                     m_aReads.push(m_ConfigResponse);
+                }
+            }
+            else
+            {
+                // All other commands: send a minimal HOST_CMD_FINISHED response
+                lock_guard<mutex> lock(m_Mutex);
+                vector<uint8_t> ack;
+                ack.push_back(HID_REPORT_DATA);
+                ack.push_back(PACKET_FLAG_HOST_CMD_FINISHED);
+                ack.push_back(0); // zero payload
+                m_aReads.push(ack);
             }
         }
         return static_cast<int>(len);
@@ -88,6 +106,11 @@ public:
     void SetConfigResponse(vector<uint8_t> resp)
     {
         m_ConfigResponse = std::move(resp);
+    }
+
+    void SetConfigResponsePackets(vector<vector<uint8_t>> packets)
+    {
+        m_aConfigResponsePackets = std::move(packets);
     }
 
     void SetFailReadsAfterCount(int count)
@@ -127,6 +150,7 @@ private:
     mutex m_Mutex;
     queue<vector<uint8_t>> m_aReads;
     vector<uint8_t> m_ConfigResponse;
+    vector<vector<uint8_t>> m_aConfigResponsePackets;
     int m_iFailAfterReads = 0;
     int m_iReadCount = 0;
     bool m_bFailWrites = false;
@@ -239,6 +263,36 @@ inline vector<uint8_t> MakeConfigResponse()
     pkt.push_back(static_cast<uint8_t>(payload.size()));
     pkt.insert(pkt.end(), payload.begin(), payload.end());
     return pkt;
+}
+
+/// Builds config response packets containing a full SMXConfig struct.
+/// Fragments into multiple HID packets like the real device would.
+inline vector<vector<uint8_t>> MakeFullConfigResponsePackets(const SMXConfig &cfg)
+{
+    vector<uint8_t> payload;
+    payload.push_back('G');
+    payload.push_back(static_cast<uint8_t>(sizeof(SMXConfig)));
+    const auto *p = reinterpret_cast<const uint8_t*>(&cfg);
+    payload.insert(payload.end(), p, p + sizeof(SMXConfig));
+
+    vector<vector<uint8_t>> packets;
+    for(size_t offset = 0; offset < payload.size(); offset += HID_MAX_PAYLOAD_SIZE)
+    {
+        size_t chunkSize = min(HID_MAX_PAYLOAD_SIZE, payload.size() - offset);
+        uint8_t flags = 0;
+        if(offset == 0)
+            flags |= PACKET_FLAG_START_OF_COMMAND;
+        if(offset + chunkSize == payload.size())
+            flags |= PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED;
+
+        vector<uint8_t> pkt(HID_PACKET_SIZE, 0);
+        pkt[0] = HID_REPORT_DATA;
+        pkt[1] = flags;
+        pkt[2] = static_cast<uint8_t>(chunkSize);
+        memcpy(&pkt[3], payload.data() + offset, chunkSize);
+        packets.push_back(pkt);
+    }
+    return packets;
 }
 
 // --- Test utility ---

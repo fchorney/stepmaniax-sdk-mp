@@ -425,3 +425,365 @@ TEST_CASE("Device reconnects successfully after read error disconnect") {
 
     SMX_Stop();
 }
+
+// =========================================================================
+// SMX_FactoryReset command format
+// =========================================================================
+
+TEST_CASE("SMX_FactoryReset sends 'f' command then re-reads config") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_FactoryReset(0);
+
+    // Wait for commands to be written
+    bool bGotWrites = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() >= 2;
+    });
+    REQUIRE(bGotWrites);
+
+    // Verify: first command is 'f\n', second is 'G' (firmware >= 5)
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundFactoryReset = false;
+    bool bFoundConfigRead = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND)
+        {
+            uint8_t payloadSize = w[2];
+            if(payloadSize >= 2 && w[3] == 'f' && w[4] == '\n')
+                bFoundFactoryReset = true;
+            if(payloadSize >= 1 && w[3] == 'G')
+                bFoundConfigRead = true;
+        }
+    }
+    CHECK(bFoundFactoryReset);
+    CHECK(bFoundConfigRead);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_FactoryReset on old firmware sends 'g' instead of 'G'") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    // Firmware version 4 (old)
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 4));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_FactoryReset(0);
+
+    bool bGotWrites = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() >= 2;
+    });
+    REQUIRE(bGotWrites);
+
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundConfigRead = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND)
+        {
+            uint8_t payloadSize = w[2];
+            if(payloadSize >= 2 && w[3] == 'g' && w[4] == '\n')
+                bFoundConfigRead = true;
+        }
+    }
+    CHECK(bFoundConfigRead);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_FactoryReset on disconnected pad does nothing") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    // Should not crash or hang
+    SMX_FactoryReset(0);
+    SMX_FactoryReset(1);
+
+    SMX_Stop();
+}
+
+// =========================================================================
+// SMX_ForceRecalibration command format
+// =========================================================================
+
+TEST_CASE("SMX_ForceRecalibration sends 'C' command") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_ForceRecalibration(0);
+
+    bool bGotWrite = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotWrite);
+
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundCalibrationCmd = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND)
+        {
+            uint8_t payloadSize = w[2];
+            if(payloadSize >= 2 && w[3] == 'C' && w[4] == '\n')
+            {
+                bFoundCalibrationCmd = true;
+                break;
+            }
+        }
+    }
+    CHECK(bFoundCalibrationCmd);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_ForceRecalibration on disconnected pad does nothing") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_ForceRecalibration(0);
+    SMX_ForceRecalibration(1);
+
+    SMX_Stop();
+}
+
+// =========================================================================
+// SMX_ReenableAutoLights command format
+// =========================================================================
+
+TEST_CASE("SMX_ReenableAutoLights sends 'S 1' to both pads") {
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
+    pFakeP1->SetCaptureWrites(true);
+    pFakeP2->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeP1);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP2);
+
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponse(MakeConfigResponse());
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBothConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBothConnected);
+
+    pFakeP1->ClearCapturedWrites();
+    pFakeP2->ClearCapturedWrites();
+    SMX_ReenableAutoLights();
+
+    bool bGotP1Write = WaitFor([&]() {
+        return pFakeP1->GetCapturedWriteCount() > 0;
+    });
+    bool bGotP2Write = WaitFor([&]() {
+        return pFakeP2->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotP1Write);
+    REQUIRE(bGotP2Write);
+
+    // Check both pads received "S 1\n"
+    auto checkAutoLightsCmd = [](const vector<vector<uint8_t>> &writes) {
+        for(const auto &w : writes)
+        {
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND)
+            {
+                uint8_t payloadSize = w[2];
+                if(payloadSize >= 4 && w[3] == 'S' && w[4] == ' ' && w[5] == '1' && w[6] == '\n')
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    CHECK(checkAutoLightsCmd(pFakeP1->GetCapturedWrites()));
+    CHECK(checkAutoLightsCmd(pFakeP2->GetCapturedWrites()));
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_ReenableAutoLights with no devices does not crash") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_ReenableAutoLights();
+
+    SMX_Stop();
+}
+
+// =========================================================================
+// SMX_SetPanelTestMode command format
+// =========================================================================
+
+TEST_CASE("SMX_SetPanelTestMode sends 't' command to both pads") {
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
+    pFakeP1->SetCaptureWrites(true);
+    pFakeP2->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeP1);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP2);
+
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponse(MakeConfigResponse());
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBothConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBothConnected);
+
+    pFakeP1->ClearCapturedWrites();
+    pFakeP2->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+
+    bool bGotP1Write = WaitFor([&]() {
+        return pFakeP1->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bGotP1Write);
+
+    // Check that "t 1\n" was sent (PanelTestMode_PressureTest = '1')
+    auto checkTestModeCmd = [](const vector<vector<uint8_t>> &writes, char mode) {
+        for(const auto &w : writes)
+        {
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND)
+            {
+                uint8_t payloadSize = w[2];
+                if(payloadSize >= 4 && w[3] == 't' && w[4] == ' ' && w[5] == (uint8_t)mode && w[6] == '\n')
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    CHECK(checkTestModeCmd(pFakeP1->GetCapturedWrites(), '1'));
+    CHECK(checkTestModeCmd(pFakeP2->GetCapturedWrites(), '1'));
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetPanelTestMode Off sends 't 0' command") {
+    auto pFakeDevice = new FakeDevice();
+    pFakeDevice->SetCaptureWrites(true);
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    // Enable and wait for the 't 1' command to actually be sent
+    pFakeDevice->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+
+    auto hasTestCmd = [](const vector<vector<uint8_t>> &writes, char mode) {
+        for(const auto &w : writes)
+            if(w.size() >= 7 && w[0] == HID_REPORT_COMMAND && w[2] >= 4 &&
+               w[3] == 't' && w[4] == ' ' && w[5] == (uint8_t)mode && w[6] == '\n')
+                return true;
+        return false;
+    };
+
+    bool bGotPressure = WaitFor([&]() {
+        return hasTestCmd(pFakeDevice->GetCapturedWrites(), '1');
+    });
+    REQUIRE(bGotPressure);
+
+    pFakeDevice->ClearCapturedWrites();
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+
+    bool bGotOff = WaitFor([&]() {
+        return hasTestCmd(pFakeDevice->GetCapturedWrites(), '0');
+    });
+    CHECK(bGotOff);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetPanelTestMode with no devices does not crash") {
+    auto pEnum = new FakeHIDEnumerator();
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+
+    SMX_Stop();
+}

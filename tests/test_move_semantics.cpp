@@ -150,3 +150,46 @@ TEST_CASE("Pad swap: input state callback fires for correct pad after reorder") 
 
     SMX_Stop();
 }
+
+TEST_CASE("Pad swap: config state survives reorder") {
+    // After a swap, GetConfig should still return the correct config for each pad.
+    SMXConfig p1Config = {};
+    p1Config.panelDebounceMicroseconds = 1111;
+
+    SMXConfig p2Config = {};
+    p2Config.panelDebounceMicroseconds = 2222;
+
+    auto pFakeP2 = new FakeDevice();
+    auto pFakeP1 = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    // P2 enumerated first to force a swap
+    pEnum->AddDevice("/dev/hidraw0", pFakeP2);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP1);
+
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponsePackets(MakeFullConfigResponsePackets(p2Config));
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponsePackets(MakeFullConfigResponsePackets(p1Config));
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBoth = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBoth);
+    REQUIRE_FALSE(info0.m_bIsPlayer2);
+    REQUIRE(info1.m_bIsPlayer2);
+
+    // After swap, slot 0 (P1) should have p1Config, slot 1 (P2) should have p2Config
+    SMXConfig cfg0 = {}, cfg1 = {};
+    REQUIRE(SMX_GetConfig(0, &cfg0));
+    REQUIRE(SMX_GetConfig(1, &cfg1));
+    CHECK(cfg0.panelDebounceMicroseconds == 1111);
+    CHECK(cfg1.panelDebounceMicroseconds == 2222);
+
+    SMX_Stop();
+}
