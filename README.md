@@ -1,15 +1,16 @@
 # StepManiaX SDK Multi Platform
 
-A minimal, cross-platform SDK for StepManiaX dance pads. Supports device discovery, connection management, player identification, and reading panel input state.
+A minimal, cross-platform SDK for StepManiaX dance pads. This is a library only — it does not include a configuration tool or GUI. Applications and tools can be built on top of it.
 
 ## Features
 
 - Auto-discovers up to 2 connected SMX pads via USB HID
 - Handles connect, disconnect, and reconnect
 - Identifies P1 vs P2 and auto-corrects pad ordering
-- Reads panel press/release state as a bitmask
-- Assigns serial numbers to controllers
-- Reports firmware version
+- Reads panel press/release state as a low-latency bitmask
+- Full device configuration (thresholds, lighting, calibration)
+- Sensor diagnostics (raw/calibrated values, noise, tare)
+- Platform LED strip control
 - Cross-platform: Linux, macOS (Intel & Apple Silicon), Windows
 
 ## Feature status
@@ -190,9 +191,9 @@ By default, the build produces a **shared library** (`libsmx-mp.so` / `libsmx-mp
 | `BUILD_INTEGRATION_TESTS` | `OFF` | Build integration tests (require real hardware) |
 
 ```bash
-cmake ..                                  # shared lib only (default)
-cmake .. -DBUILD_SAMPLE=ON               # shared lib + sample
-cmake .. -DBUILD_SHARED_LIBS=OFF         # static lib only
+cmake ..                                            # shared lib only (default)
+cmake .. -DBUILD_SAMPLE=ON                          # shared lib + sample
+cmake .. -DBUILD_SHARED_LIBS=OFF                    # static lib only
 cmake .. -DBUILD_SHARED_LIBS=OFF -DBUILD_SAMPLE=ON  # static lib + sample
 ```
 
@@ -265,6 +266,21 @@ After building, run the sample application:
 # With custom polling rates (main thread ms, USB polling thread us)
 ./smx-sample 50 500
 
+# Fire input callback on every packet (not just state changes)
+./smx-sample --all-packets
+
+# Enable panel pressure test mode (diagnostic LEDs)
+./smx-sample --test-mode
+
+# Combined
+./smx-sample 50 500 --all-packets --test-mode
+
+# Sensor test modes (prints values every 100ms)
+./smx-sample --uncalibrated
+./smx-sample --calibrated
+./smx-sample --noise
+./smx-sample --tare
+
 # Windows (from build directory)
 .\Release\smx-sample.exe   # vcpkg/MSVC
 .\smx-sample.exe            # MSYS2/MinGW
@@ -277,10 +293,11 @@ Example output:
 ```
 SMX SDK Multi Platform v0.1.1
 Scanning for StepManiaX devices... Press Ctrl+C to quit.
-Usage: ./smx-sample [main_thread_ms] [usb_polling_us]
+Usage: ./smx-sample [main_thread_ms] [usb_polling_us] [--all-packets] [--test-mode]
+       [--uncalibrated] [--calibrated] [--noise] [--tare]
 Pad 0 connected (jumper: P1, serial: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d, fw: 5)
-Pad 0: input state 0000
-Pad 0: input state 0010
+ 0.052: Pad 0: input state 0000
+ 0.153: Pad 0: input state 0010
 ```
 
 ## API overview
