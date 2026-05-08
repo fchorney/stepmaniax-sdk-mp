@@ -34,6 +34,7 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Re-enable auto lights | `SMX_ReenableAutoLights` | Return panels to automatic step lighting |
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
+| Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
 
 ### Not yet implemented
 
@@ -41,7 +42,6 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 |---------|-------------|------------|-------------|
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Medium | Read raw/calibrated sensor values for diagnostics |
 | Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
-| Platform LED strip | `SMX_SetPlatformLights` | Medium | Control the platform edge LED strip (firmware v4+) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
 | Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
 
@@ -318,6 +318,9 @@ void SMX_ForceRecalibration(int pad);
 
 // Re-enable automatic panel lighting on both pads.
 void SMX_ReenableAutoLights();
+
+// Set platform edge LED strip colors (88 LEDs × 3 bytes RGB = 264 bytes, firmware v4+).
+void SMX_SetPlatformLights(const char *pLightData);
 
 // Set panel-side diagnostic test mode.
 void SMX_SetPanelTestMode(PanelTestMode mode);

@@ -22,32 +22,60 @@
 
 struct SMXInfo;
 
+/// Bits for SMXConfig::flags (masterVersion >= 4).
+enum SMXConfigFlags {
+    // If set, panels will use the pressed animation when pressed, and stepColor
+    // is ignored. If unset, panels will be lit solid using stepColor.
+    PlatformFlags_AutoLightingUsePressedAnimations = 1 << 0,
+
+    // If set, panels are using FSRs, otherwise load cells.
+    PlatformFlags_FSR = 1 << 1,
+};
+
 /// Packed sensor settings for a single panel.
 /// Contains low/high thresholds for load cell and FSR sensors,
 /// as well as combined (multi-sensor) thresholds.
 #pragma pack(push, 1)
 struct packed_sensor_settings_t {
+    // Load cell thresholds:
     uint8_t loadCellLowThreshold;
     uint8_t loadCellHighThreshold;
+
+    // FSR (Force Sensitive Resistor) thresholds:
     uint8_t fsrLowThreshold[4];
     uint8_t fsrHighThreshold[4];
+
     uint16_t combinedLowThreshold;
     uint16_t combinedHighThreshold;
+
+    // This must be left unchanged.
     uint16_t reserved;
 };
 #pragma pack(pop)
 
 /// Configuration state for an SMX device.
-/// Describes debounce settings, sensor thresholds, panel colors, auto-calibration
-/// parameters, and other device settings. Total size is 250 bytes, tightly packed.
+/// The order and packing of this struct corresponds to the configuration packet sent to
+/// the master controller, so it must not be changed.
 ///
 /// Read with SMX_GetConfig(). Write with SMX_SetConfig().
 #pragma pack(push, 1)
 struct SMXConfig
 {
+    // The firmware version of the master controller. Where supported (version 2+), this
+    // will always read back the firmware version. Defaults to 0xFF on version 1.
+    // We always write 0xFF here so it doesn't change on that firmware version.
     uint8_t masterVersion = 0xFF;
+
+    // The version of this config packet. This can be used by the firmware to know which
+    // values have been filled in. Unrelated to firmware version.
+    // Versions: 0xFF=pre-versioning, 0x00=first, 0x02=per-panel thresholds,
+    //           0x03=debounceDelayMs added, 0x05=current (packed_sensor_settings_t)
     uint8_t configVersion = 0x05;
+
+    // Packed flags (masterVersion >= 4).
     uint8_t flags = 0;
+
+    // These are internal tunables and should be left unchanged.
     uint16_t debounceNodelayMilliseconds = 0;
     uint16_t debounceDelayMilliseconds = 0;
     uint16_t panelDebounceMicroseconds = 4000;
@@ -55,15 +83,40 @@ struct SMXConfig
     uint8_t badSensorMinimumDelaySeconds = 15;
     uint16_t autoCalibrationAveragesPerUpdate = 60;
     uint16_t autoCalibrationSamplesPerAverage = 500;
+
+    // The maximum tare value to calibrate to (except on startup).
     uint16_t autoCalibrationMaxTare = 0xFFFF;
+
+    // Which sensors on each panel to enable. Packed with four sensors on two pads per byte:
+    // enabledSensors[0] & 1 is the first sensor on the first pad, and so on.
     uint8_t enabledSensors[5]{};
+
+    // How long the master controller will wait for a lights command before resuming
+    // auto-lights. In 128ms units.
     uint8_t autoLightsTimeout = 1000/128;
+
+    // The color to use for each panel when auto-lighting in master mode.
+    // These colors should be scaled to the 0-170 range.
     uint8_t stepColor[3*9]{};
+
+    // The default color to set the platform LED strip to.
     uint8_t platformStripColor[3]{};
+
+    // Which panels to enable auto-lighting for. Disabled panels will be unlit.
+    // 0x01 = panel 0, 0x02 = panel 1, 0x04 = panel 2, etc.
     uint16_t autoLightPanelMask = 0xFFFF;
+
+    // The rotation of the panel (0-3, 90° increments). Currently unused.
     uint8_t panelRotation{};
+
+    // Per-panel sensor settings:
     packed_sensor_settings_t panelSettings[9]{};
+
+    // Internal tunable; should be left unchanged.
     uint8_t preDetailsDelayMilliseconds = 5;
+
+    // Pad the struct to 250 bytes. This keeps the struct size stable as fields are added.
+    // Applications should leave any data in here unchanged when calling SMX_SetConfig.
     uint8_t padding[49]{};
 };
 #pragma pack(pop)
@@ -216,6 +269,14 @@ SMX_API void SMX_ForceRecalibration(int pad);
 /// lighting commands, auto-lighting is disabled. Call this to immediately re-enable it
 /// without waiting for the timeout period to elapse.
 SMX_API void SMX_ReenableAutoLights();
+
+/// Sets the platform edge LED strip colors for both pads.
+/// The input buffer contains 88 RGB triplets (264 bytes total): the first 44 LEDs
+/// (132 bytes) are for pad 0, the second 44 LEDs (132 bytes) are for pad 1.
+/// Requires firmware v4+. Disables auto-lighting until timeout or SMX_ReenableAutoLights.
+///
+/// @param pLightData Pointer to 264 bytes of RGB data (88 LEDs × 3 bytes each).
+SMX_API void SMX_SetPlatformLights(const char *pLightData);
 
 /// Panel-side diagnostic test modes.
 /// These activate debug lighting on the panels and don't return data to the host.

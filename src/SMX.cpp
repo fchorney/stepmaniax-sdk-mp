@@ -614,6 +614,29 @@ public:
             m_Device.SendCommand(string("S 1\n", 4));
     }
 
+    void SetPlatformLights(const char *pLightData)
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+        for(int iPad = 0; iPad < 2; iPad++)
+        {
+            if(!m_Devices[iPad].IsConnected())
+                continue;
+
+            SMXConfig config;
+            if(!m_Devices[iPad].GetConfig(config))
+                continue;
+            if(config.masterVersion < 4)
+                continue;
+
+            string sCmd;
+            sCmd.push_back('L');
+            sCmd.push_back(0);   // strip index
+            sCmd.push_back(44);  // number of LEDs
+            sCmd.append(pLightData + iPad * 44 * 3, 44 * 3);
+            m_Devices[iPad].SendCommand(sCmd);
+        }
+    }
+
     void SetPanelTestMode(PanelTestMode mode)
     {
         lock_guard<recursive_mutex> lock(m_Lock);
@@ -961,6 +984,13 @@ SMX_API void SMX_ForceRecalibration(const int pad)
 SMX_API void SMX_ReenableAutoLights()
 {
     if(g_pSMX) g_pSMX->ReenableAutoLights();
+}
+
+/// Sets the platform edge LED strip colors for both pads.
+SMX_API void SMX_SetPlatformLights(const char *pLightData)
+{
+    if(!g_pSMX || !pLightData) return;
+    g_pSMX->SetPlatformLights(pLightData);
 }
 
 /// Sets a panel test mode on all connected pads.

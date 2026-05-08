@@ -469,3 +469,87 @@ TEST_CASE("Real hardware: config get/set round-trip")
 
     SMX_Stop();
 }
+
+TEST_CASE("Real hardware: platform lights set red then blue")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/platform_lights";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
+
+    // Verify at least one pad has fw >= 4
+    bool bSupported = false;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected && info.m_iFirmwareVersion >= 4)
+            bSupported = true;
+    }
+    if(!bSupported)
+    {
+        MESSAGE("No pad with firmware v4+ detected, skipping platform lights test");
+        SMX_Stop();
+        return;
+    }
+
+    // Set all LEDs to red
+    char lightData[88 * 3] = {};
+    for(int i = 0; i < 88; i++)
+    {
+        lightData[i * 3 + 0] = static_cast<char>(255); // R
+        lightData[i * 3 + 1] = 0;                      // G
+        lightData[i * 3 + 2] = 0;                      // B
+    }
+    SMX_SetPlatformLights(lightData);
+    MESSAGE("Set platform lights to RED");
+    this_thread::sleep_for(chrono::seconds(2));
+
+    // Set all LEDs to blue
+    for(int i = 0; i < 88; i++)
+    {
+        lightData[i * 3 + 0] = 0;                      // R
+        lightData[i * 3 + 1] = 0;                      // G
+        lightData[i * 3 + 2] = static_cast<char>(255); // B
+    }
+    SMX_SetPlatformLights(lightData);
+    MESSAGE("Set platform lights to BLUE");
+    this_thread::sleep_for(chrono::seconds(2));
+
+    // Re-enable auto lights to restore normal behavior
+    SMX_ReenableAutoLights();
+    MESSAGE("Re-enabled auto lights");
+    this_thread::sleep_for(chrono::milliseconds(200));
+
+    SMX_Stop();
+}

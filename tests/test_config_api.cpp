@@ -365,3 +365,106 @@ TEST_CASE("ConvertToOldConfig round-trips with ConvertToNewConfig") {
         CHECK(roundTripped.panelSettings[i].loadCellHighThreshold == original.panelSettings[i].loadCellHighThreshold);
     }
 }
+
+// =========================================================================
+// SMX_SetPlatformLights tests
+// =========================================================================
+
+TEST_CASE("SMX_SetPlatformLights sends L command to fw v4+ device") {
+    SMXConfig deviceConfig = {};
+    deviceConfig.masterVersion = 5;
+
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
+    pFakeDevice->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+
+    // Send platform lights (all red for pad 0)
+    char lightData[88 * 3] = {};
+    for(int i = 0; i < 44; i++)
+        lightData[i * 3] = static_cast<char>(255); // R=255 for pad 0
+
+    SMX_SetPlatformLights(lightData);
+
+    bool bWriteSent = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() > 0;
+    });
+    CHECK(bWriteSent);
+
+    // Verify the write contains 'L' command
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundCmd = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND && w[2] >= 3 &&
+           w[3] == 'L' && w[4] == 0 && w[5] == 44)
+        {
+            bFoundCmd = true;
+            break;
+        }
+    }
+    CHECK(bFoundCmd);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_SetPlatformLights skips device with fw < 4") {
+    SMXConfig deviceConfig = {};
+    deviceConfig.masterVersion = 3;
+
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 3));
+    pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
+    pFakeDevice->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+
+    char lightData[88 * 3] = {};
+    SMX_SetPlatformLights(lightData);
+
+    // Give it time to process
+    this_thread::sleep_for(chrono::milliseconds(200));
+
+    // Should NOT have sent any 'L' command
+    auto writes = pFakeDevice->GetCapturedWrites();
+    bool bFoundCmd = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND && w[2] >= 1 && w[3] == 'L')
+        {
+            bFoundCmd = true;
+            break;
+        }
+    }
+    CHECK_FALSE(bFoundCmd);
+
+    SMX_Stop();
+}
