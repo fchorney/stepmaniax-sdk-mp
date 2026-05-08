@@ -468,3 +468,57 @@ TEST_CASE("Replay: config get/set")
 
     SMX_Stop();
 }
+
+TEST_CASE("Replay: platform lights")
+{
+    string sFile0 = CapturePath("platform_lights/device_0.smxhid");
+    string sFile1 = CapturePath("platform_lights/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool*>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    // Verify the capture contains 'L' (platform lights) commands
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+    bool bFoundLightCmd = false;
+    for(const auto *dev : devs)
+    {
+        if(WritesContainCommand(dev->GetExpectedWrites(), "L"))
+        {
+            bFoundLightCmd = true;
+            break;
+        }
+    }
+    CHECK(bFoundLightCmd);
+
+    // Verify the capture also contains 'S' (re-enable auto lights)
+    bool bFoundAutoLights = false;
+    for(const auto *dev : devs)
+    {
+        if(WritesContainCommand(dev->GetExpectedWrites(), string("S 1\n", 4)))
+        {
+            bFoundAutoLights = true;
+            break;
+        }
+    }
+    CHECK(bFoundAutoLights);
+
+    SMX_Stop();
+}
