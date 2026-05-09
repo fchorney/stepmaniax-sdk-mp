@@ -24,9 +24,6 @@ namespace SMX {
 // size: payload length (little-endian uint16)
 // data: raw HID packet bytes
 
-static constexpr size_t HID_CAPTURE_MAGIC_SIZE = 7;
-static const char HID_CAPTURE_MAGIC[HID_CAPTURE_MAGIC_SIZE] = {'S','M','X','H','I','D','\x01'};
-
 struct HIDCaptureRecord
 {
     char cType;              // 'R' or 'W'

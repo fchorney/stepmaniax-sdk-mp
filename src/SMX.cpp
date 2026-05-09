@@ -769,7 +769,7 @@ public:
     {
         lock_guard<recursive_mutex> lock(m_Lock);
         for(auto & m_Device : m_Devices)
-            m_Device.SendCommand(string("S 1\n", 4));
+            m_Device.SendCommand("S 1\n");
     }
 
     void SetPlatformLights(const char *pLightData)
@@ -872,9 +872,11 @@ private:
             }
 
             // Correct device ordering BEFORE firing Connected callbacks.
-            // This ensures SMX_GetInfo(pad) returns the correct device when
-            // the callback handler queries it.
-            const bool bSwapped = CorrectDeviceOrder();
+            // Only needed when a device just connected — ordering is stable otherwise.
+            const bool bDeviceJustConnected =
+                (!bWasConnected[0] && m_Devices[0].IsConnected()) ||
+                (!bWasConnected[1] && m_Devices[1].IsConnected());
+            const bool bSwapped = bDeviceJustConnected && CorrectDeviceOrder();
 
             // Detect which slots just transitioned to connected, accounting for swap.
             bool bJustConnected[2] = {
