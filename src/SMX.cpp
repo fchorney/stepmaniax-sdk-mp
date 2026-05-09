@@ -77,11 +77,14 @@ void SetLogCallback(function<void(const string &log)> callback)
 /// @return The formatted string.
 string ssprintf(const char *fmt, ...)
 {
+    char buf[512];
     va_list va;
     va_start(va, fmt);
-    const int n = vsnprintf(nullptr, 0, fmt, va);
+    const int n = vsnprintf(buf, sizeof(buf), fmt, va);
     va_end(va);
     if(n < 0) return string("Error formatting: ") + fmt;
+    if(n < static_cast<int>(sizeof(buf)))
+        return string(buf, n);
 
     string s(n, '\0');
     va_start(va, fmt);
@@ -97,10 +100,14 @@ string ssprintf(const char *fmt, ...)
 /// @return Hexadecimal string representation of the binary data.
 string BinaryToHex(const void *pData, const int iNumBytes)
 {
+    static const char hex[] = "0123456789abcdef";
     const auto *p = static_cast<const unsigned char*>(pData);
-    string s;
+    string s(iNumBytes * 2, '\0');
     for(int i = 0; i < iNumBytes; i++)
-        s += ssprintf("%02x", p[i]);
+    {
+        s[i*2]   = hex[p[i] >> 4];
+        s[i*2+1] = hex[p[i] & 0x0F];
+    }
     return s;
 }
 
