@@ -2,7 +2,6 @@
 #define SMX_H
 
 #include <cstdint>
-#include <cstring>
 #include <cmath>
 
 #ifdef SMX_EXPORTS

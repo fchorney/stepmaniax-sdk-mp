@@ -207,7 +207,7 @@ private:
     /// Processes all available data from the HID device.
     /// Reads packets until no more data is available, handling command timeouts.
     /// @param sError [out] Error message if a read fails.
-    void CheckReads(std::string &sError);
+    void CheckReads();
 
     /// Sends the next pending command to the device if no command is currently in flight.
     /// Breaks the command into 64-byte HID packets and sends them sequentially.

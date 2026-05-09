@@ -34,9 +34,9 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_bHadReadError(other.m_bHadReadError.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
+    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback)),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
-    m_pCurrentCommand(std::move(other.m_pCurrentCommand)),
-    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback))
+    m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
 }
 
@@ -133,8 +133,7 @@ void SMXDeviceConnection::Update(string &sError)
         return;
     }
 
-    CheckReads(sError);
-    if(!sError.empty()) return;
+    CheckReads();
     CheckWrites(sError);
 }
 
@@ -153,7 +152,7 @@ bool SMXDeviceConnection::ReadPacket(string &out)
 /// Called by the main I/O thread to handle commands and config updates.
 /// Report 3 (input state) packets are handled entirely by the USB polling thread.
 /// Handles command timeouts, fragmentation flags, and command callbacks.
-void SMXDeviceConnection::CheckReads(string &sError)
+void SMXDeviceConnection::CheckReads()
 {
     // Check if current command has timed out (2 second limit).
     if(m_pCurrentCommand && m_pCurrentCommand->m_bSent)
