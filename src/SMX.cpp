@@ -941,6 +941,12 @@ private:
         if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
             return;
 
+        // Rate-limit enumeration to once per second to reduce syscalls.
+        double fNow = GetMonotonicTime();
+        if(fNow - m_fLastEnumerationTime < 1.0)
+            return;
+        m_fLastEnumerationTime = fNow;
+
         // Enumerate SMX devices via the HID enumerator.
         auto devs = m_pEnumerator->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
         for(const auto &dev : devs)
@@ -1023,6 +1029,7 @@ private:
     PanelTestMode m_PanelTestMode = PanelTestMode_Off;
     PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
     double m_fLastPanelTestModeSentAt = 0;
+    double m_fLastEnumerationTime = 0;
 };
 
 // File-static singleton. No global variable visible outside this file.
