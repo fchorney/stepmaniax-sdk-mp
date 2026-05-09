@@ -39,7 +39,7 @@ using namespace std;
 
 namespace SMX {
 
-static function<void(const string &log)> g_LogCallback;
+static atomic<SMXLogCallback*> g_LogCallback{nullptr};
 
 /// Returns the elapsed time in seconds since program start using a high-resolution
 /// monotonic clock. Used for timing commands and logging timestamps.
@@ -55,19 +55,19 @@ double GetMonotonicTime()
 /// @param s The message to log.
 void Log(const string &s)
 {
-    if(g_LogCallback)
-        g_LogCallback(s);
+    auto cb = g_LogCallback.load(memory_order_acquire);
+    if(cb)
+        cb(s.c_str());
     else
         printf("%6.3f: %s\n", GetMonotonicTime(), s.c_str());
 }
 
 /// Sets a custom callback function to handle all log messages from the SDK.
-/// This allows applications to redirect logging to files, custom streams, etc.
-/// If not set, logs will be printed to stdout.
-/// @param callback Function that receives log messages as strings.
-void SetLogCallback(function<void(const string &log)> callback)
+/// Thread-safe: can be called from any thread at any time.
+/// @param callback Function that receives log strings. Pass nullptr to disable.
+void SetLogCallback(SMXLogCallback *callback)
 {
-    g_LogCallback = std::move(callback);
+    g_LogCallback.store(callback, memory_order_release);
 }
 
 /// Formatted string printing using printf-style arguments. Returns a std::string
@@ -158,6 +158,7 @@ public:
     // Movable (required for storage in arrays and manager reordering)
     SMXDevice(SMXDevice &&other) noexcept:
         m_pLock(other.m_pLock),
+        m_iPadIndex(other.m_iPadIndex),
         m_pUpdateCallback(std::move(other.m_pUpdateCallback)),
         m_Connection(std::move(other.m_Connection)),
         m_Config(other.m_Config),
@@ -184,6 +185,7 @@ public:
         if(this != &other)
         {
             m_pLock = other.m_pLock;
+            m_iPadIndex = other.m_iPadIndex;
             m_pUpdateCallback = std::move(other.m_pUpdateCallback);
             m_Connection = std::move(other.m_Connection);
             m_Config = other.m_Config;
@@ -210,6 +212,9 @@ public:
     /// Called during initialization to point to the manager's lock.
     /// @param pLock Pointer to the recursive mutex.
     void SetLock(recursive_mutex *pLock) { m_pLock = pLock; }
+
+    /// Sets the slot index (0 or 1) for this device, used in callbacks.
+    void SetPadIndex(int i) { m_iPadIndex = i; }
 
     /// Sets the callback function to be invoked when this device's state changes
     /// (e.g., connection, disconnection, input state updates).
@@ -494,8 +499,7 @@ private:
     {
         if(!m_pUpdateCallback)
             return;
-        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
-        m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
+        m_pUpdateCallback(m_iPadIndex, reason);
     }
 
     /// Sends pending config to the device if conditions are met.
@@ -659,6 +663,7 @@ private:
     }
 
     recursive_mutex *m_pLock = nullptr;
+    int m_iPadIndex = 0;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
@@ -695,11 +700,12 @@ public:
         m_pEnumerator(CreateHIDAPIEnumerator())
     {
         m_pEnumerator->Init();
-        for(auto & m_Device : m_Devices)
+        for(int i = 0; i < 2; i++)
         {
-            m_Device.SetLock(&m_Lock);
-            m_Device.SetUpdateCallback(callback);
-            m_Device.SetConnectionCallbacks();
+            m_Devices[i].SetLock(&m_Lock);
+            m_Devices[i].SetPadIndex(i);
+            m_Devices[i].SetUpdateCallback(callback);
+            m_Devices[i].SetConnectionCallbacks();
         }
         m_Thread = thread([this] { ThreadMain(); });
         m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
@@ -711,11 +717,12 @@ public:
         m_pEnumerator(std::move(pEnumerator))
     {
         m_pEnumerator->Init();
-        for(auto & m_Device : m_Devices)
+        for(int i = 0; i < 2; i++)
         {
-            m_Device.SetLock(&m_Lock);
-            m_Device.SetUpdateCallback(callback);
-            m_Device.SetConnectionCallbacks();
+            m_Devices[i].SetLock(&m_Lock);
+            m_Devices[i].SetPadIndex(i);
+            m_Devices[i].SetUpdateCallback(callback);
+            m_Devices[i].SetConnectionCallbacks();
         }
         m_Thread = thread([this] { ThreadMain(); });
         m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
@@ -993,10 +1000,12 @@ private:
             m_Devices[0] = std::move(m_Devices[1]);
             m_Devices[1] = std::move(temp);
 
-            // Re-bind callbacks after swap since the captured 'this' pointers
-            // in the lambdas now point to the wrong SMXDevice objects.
+            // Re-bind callbacks and pad indices after swap since the devices
+            // are now in different slots.
             m_Devices[0].SetConnectionCallbacks();
             m_Devices[1].SetConnectionCallbacks();
+            m_Devices[0].SetPadIndex(0);
+            m_Devices[1].SetPadIndex(1);
         }
         return bSwap;
     }
@@ -1064,9 +1073,7 @@ SMX_API void SMX_Stop()
 /// @param callback Function that receives log strings. Can be nullptr to disable.
 SMX_API void SMX_SetLogCallback(SMXLogCallback callback)
 {
-    SetLogCallback([callback](const string &log) {
-        callback(log.c_str());
-    });
+    SetLogCallback(callback);
 }
 
 /// Queries information about a connected device.
