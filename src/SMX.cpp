@@ -696,19 +696,8 @@ public:
     /// Constructor initializes the manager and starts the background I/O thread.
     /// @param callback Function to be invoked when device state changes.
     explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
-        m_Callback(callback),
-        m_pEnumerator(CreateHIDAPIEnumerator())
+        SMXManager(callback, CreateHIDAPIEnumerator())
     {
-        m_pEnumerator->Init();
-        for(int i = 0; i < 2; i++)
-        {
-            m_Devices[i].SetLock(&m_Lock);
-            m_Devices[i].SetPadIndex(i);
-            m_Devices[i].SetUpdateCallback(callback);
-            m_Devices[i].SetConnectionCallbacks();
-        }
-        m_Thread = thread([this] { ThreadMain(); });
-        m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
     }
 
     /// Constructor that accepts a custom enumerator (for testing).
