@@ -1047,7 +1047,11 @@ shared_ptr<SMXManager> g_pSMX;
 /// @param pUser Application-defined pointer passed to all callbacks for context.
 SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 {
-    if(g_pSMX) return;
+    if(g_pSMX)
+    {
+        Log("SMX_Start called while already running; ignoring.");
+        return;
+    }
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
