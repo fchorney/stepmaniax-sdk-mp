@@ -16,10 +16,8 @@ jobs:
             install: sudo apt-get update && sudo apt-get install -y libhidapi-dev
           - os: macos-latest
             install: brew install hidapi
-          - os: macos-13
-            install: brew install hidapi
           - os: windows-latest
-            install: vcpkg install hidapi
+            install: vcpkg install hidapi:x64-windows
 
     runs-on: ${{ matrix.os }}
 
@@ -35,7 +33,7 @@ jobs:
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
-        run: cmake -B build -DBUILD_TESTS=ON -DBUILD_SAMPLE=ON -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+        run: cmake -B build -DBUILD_TESTS=ON -DBUILD_SAMPLE=ON -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_INSTALLATION_ROOT }}/scripts/buildsystems/vcpkg.cmake
 
       - name: Build
         run: cmake --build build --config Release
