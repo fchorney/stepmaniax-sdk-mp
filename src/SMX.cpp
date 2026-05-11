@@ -720,6 +720,14 @@ public:
     /// Destructor signals the I/O thread to stop and waits for it to finish.
     ~SMXManager()
     {
+        // Detect if SMX_Stop() is being called from within a callback (which would deadlock).
+        auto thisId = this_thread::get_id();
+        if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
+        {
+            Log("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting.");
+            abort();
+        }
+
         m_bShutdown = true;
         m_Cond.notify_all();
         if(m_Thread.joinable())
@@ -820,6 +828,7 @@ private:
     /// - Sleep interval is configurable via SMX_SetPollingRate (default: 1000us)
     void USBPollingThreadMain()
     {
+        m_USBPollingThreadId = this_thread::get_id();
         while(!m_bShutdown)
         {
             bool bHasReport6Data = false;
@@ -853,6 +862,7 @@ private:
     /// - Waits for Report 6 data or timeout before the next iteration
     void ThreadMain()
     {
+        m_MainThreadId = this_thread::get_id();
         m_Lock.lock();
         while(!m_bShutdown)
         {
@@ -1010,6 +1020,8 @@ private:
     recursive_mutex m_Lock;
     thread m_Thread;
     thread m_USBPollingThread;
+    thread::id m_MainThreadId;
+    thread::id m_USBPollingThreadId;
     condition_variable_any m_Cond;
     atomic<bool> m_bShutdown{false};
     atomic<int> m_iMainThreadSleepMs{50};
