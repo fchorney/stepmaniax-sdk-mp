@@ -33,7 +33,7 @@ if(PKG_CONFIG_FOUND)
 endif()
 
 if(NOT HIDAPI_FOUND)
-    find_package(hidapi REQUIRED)
+    find_package(hidapi CONFIG REQUIRED)
     # vcpkg provides platform-specific targets: hidapi::winapi (Windows), hidapi::hidraw or hidapi::libusb (Linux)
     if(TARGET hidapi::hidapi)
         set(HIDAPI_LIBRARIES hidapi::hidapi)
