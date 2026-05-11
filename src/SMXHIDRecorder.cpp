@@ -11,6 +11,9 @@ using namespace std;
 
 namespace SMX {
 
+static constexpr size_t HID_CAPTURE_MAGIC_SIZE = 7;
+static const char HID_CAPTURE_MAGIC[HID_CAPTURE_MAGIC_SIZE] = {'S','M','X','H','I','D','\x01'};
+
 // Create directory and parents (like mkdir -p).
 static void CreateDirectoryRecursive(const string &sPath)
 {

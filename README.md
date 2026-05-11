@@ -449,19 +449,25 @@ Panel: ┌───┬───┬───┐
 │   ├── SMXHIDRecorder.h         # HID traffic record/replay
 │   ├── SMXHIDRecorder.cpp       # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h        # Internal config struct
-│   └── SMXConfigPacket.cpp      # Old firmware config format conversion
+│   ├── SMXConfigPacket.cpp      # Old firmware config format conversion
+│   └── SMXVersion.h.in          # Version header template (configured by CMake)
 ├── tests/
-│   ├── test_main.cpp            # Basic API tests
+│   ├── test_main.cpp            # Version and log callback tests
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
 │   ├── test_smx_manager.cpp     # Manager discovery and ordering tests
 │   ├── test_config_packet.cpp   # Config format conversion tests
 │   ├── test_config_api.cpp      # Config get/set API tests
 │   ├── test_helpers.cpp         # Utility function tests
-│   ├── test_helpers_manager.h    # Shared test infrastructure for manager-level tests
+│   ├── test_helpers_manager.h   # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
+│   ├── test_replay.cpp          # HID traffic replay regression tests
 │   └── test_integration.cpp     # Integration tests (real hardware)
 ├── sample/
 │   └── sample.cpp               # Sample application
+├── scripts/
+│   └── decode_smxhid.py         # Decode .smxhid capture files for debugging
+├── capture/                     # Recorded HID traffic for replay-based tests
+├── bump-version.sh              # Version bump helper script
 └── CMakeLists.txt               # Build configuration
 ```
 

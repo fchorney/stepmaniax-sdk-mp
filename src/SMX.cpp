@@ -39,7 +39,7 @@ using namespace std;
 
 namespace SMX {
 
-static function<void(const string &log)> g_LogCallback;
+static atomic<SMXLogCallback*> g_LogCallback{nullptr};
 
 /// Returns the elapsed time in seconds since program start using a high-resolution
 /// monotonic clock. Used for timing commands and logging timestamps.
@@ -55,19 +55,19 @@ double GetMonotonicTime()
 /// @param s The message to log.
 void Log(const string &s)
 {
-    if(g_LogCallback)
-        g_LogCallback(s);
+    auto cb = g_LogCallback.load(memory_order_acquire);
+    if(cb)
+        cb(s.c_str());
     else
         printf("%6.3f: %s\n", GetMonotonicTime(), s.c_str());
 }
 
 /// Sets a custom callback function to handle all log messages from the SDK.
-/// This allows applications to redirect logging to files, custom streams, etc.
-/// If not set, logs will be printed to stdout.
-/// @param callback Function that receives log messages as strings.
-void SetLogCallback(function<void(const string &log)> callback)
+/// Thread-safe: can be called from any thread at any time.
+/// @param callback Function that receives log strings. Pass nullptr to disable.
+void SetLogCallback(SMXLogCallback *callback)
 {
-    g_LogCallback = std::move(callback);
+    g_LogCallback.store(callback, memory_order_release);
 }
 
 /// Formatted string printing using printf-style arguments. Returns a std::string
@@ -77,11 +77,14 @@ void SetLogCallback(function<void(const string &log)> callback)
 /// @return The formatted string.
 string ssprintf(const char *fmt, ...)
 {
+    char buf[512];
     va_list va;
     va_start(va, fmt);
-    const int n = vsnprintf(nullptr, 0, fmt, va);
+    const int n = vsnprintf(buf, sizeof(buf), fmt, va);
     va_end(va);
     if(n < 0) return string("Error formatting: ") + fmt;
+    if(n < static_cast<int>(sizeof(buf)))
+        return string(buf, n);
 
     string s(n, '\0');
     va_start(va, fmt);
@@ -97,10 +100,14 @@ string ssprintf(const char *fmt, ...)
 /// @return Hexadecimal string representation of the binary data.
 string BinaryToHex(const void *pData, const int iNumBytes)
 {
+    static const char hex[] = "0123456789abcdef";
     const auto *p = static_cast<const unsigned char*>(pData);
-    string s;
+    string s(iNumBytes * 2, '\0');
     for(int i = 0; i < iNumBytes; i++)
-        s += ssprintf("%02x", p[i]);
+    {
+        s[i*2]   = hex[p[i] >> 4];
+        s[i*2+1] = hex[p[i] & 0x0F];
+    }
     return s;
 }
 
@@ -151,6 +158,7 @@ public:
     // Movable (required for storage in arrays and manager reordering)
     SMXDevice(SMXDevice &&other) noexcept:
         m_pLock(other.m_pLock),
+        m_iPadIndex(other.m_iPadIndex),
         m_pUpdateCallback(std::move(other.m_pUpdateCallback)),
         m_Connection(std::move(other.m_Connection)),
         m_Config(other.m_Config),
@@ -177,6 +185,7 @@ public:
         if(this != &other)
         {
             m_pLock = other.m_pLock;
+            m_iPadIndex = other.m_iPadIndex;
             m_pUpdateCallback = std::move(other.m_pUpdateCallback);
             m_Connection = std::move(other.m_Connection);
             m_Config = other.m_Config;
@@ -203,6 +212,9 @@ public:
     /// Called during initialization to point to the manager's lock.
     /// @param pLock Pointer to the recursive mutex.
     void SetLock(recursive_mutex *pLock) { m_pLock = pLock; }
+
+    /// Sets the slot index (0 or 1) for this device, used in callbacks.
+    void SetPadIndex(int i) { m_iPadIndex = i; }
 
     /// Sets the callback function to be invoked when this device's state changes
     /// (e.g., connection, disconnection, input state updates).
@@ -487,8 +499,7 @@ private:
     {
         if(!m_pUpdateCallback)
             return;
-        const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
-        m_pUpdateCallback(di.m_bP2 ? 1 : 0, reason);
+        m_pUpdateCallback(m_iPadIndex, reason);
     }
 
     /// Sends pending config to the device if conditions are met.
@@ -652,6 +663,7 @@ private:
     }
 
     recursive_mutex *m_pLock = nullptr;
+    int m_iPadIndex = 0;
     function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
     SMXDeviceConnection m_Connection;
     SMXConfig m_Config;
@@ -684,18 +696,8 @@ public:
     /// Constructor initializes the manager and starts the background I/O thread.
     /// @param callback Function to be invoked when device state changes.
     explicit SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
-        m_Callback(callback),
-        m_pEnumerator(CreateHIDAPIEnumerator())
+        SMXManager(callback, CreateHIDAPIEnumerator())
     {
-        m_pEnumerator->Init();
-        for(auto & m_Device : m_Devices)
-        {
-            m_Device.SetLock(&m_Lock);
-            m_Device.SetUpdateCallback(callback);
-            m_Device.SetConnectionCallbacks();
-        }
-        m_Thread = thread([this] { ThreadMain(); });
-        m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
     }
 
     /// Constructor that accepts a custom enumerator (for testing).
@@ -704,11 +706,12 @@ public:
         m_pEnumerator(std::move(pEnumerator))
     {
         m_pEnumerator->Init();
-        for(auto & m_Device : m_Devices)
+        for(int i = 0; i < 2; i++)
         {
-            m_Device.SetLock(&m_Lock);
-            m_Device.SetUpdateCallback(callback);
-            m_Device.SetConnectionCallbacks();
+            m_Devices[i].SetLock(&m_Lock);
+            m_Devices[i].SetPadIndex(i);
+            m_Devices[i].SetUpdateCallback(callback);
+            m_Devices[i].SetConnectionCallbacks();
         }
         m_Thread = thread([this] { ThreadMain(); });
         m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
@@ -717,6 +720,14 @@ public:
     /// Destructor signals the I/O thread to stop and waits for it to finish.
     ~SMXManager()
     {
+        // Detect if SMX_Stop() is being called from within a callback (which would deadlock).
+        auto thisId = this_thread::get_id();
+        if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
+        {
+            Log("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting.");
+            abort();
+        }
+
         m_bShutdown = true;
         m_Cond.notify_all();
         if(m_Thread.joinable())
@@ -766,7 +777,7 @@ public:
     {
         lock_guard<recursive_mutex> lock(m_Lock);
         for(auto & m_Device : m_Devices)
-            m_Device.SendCommand(string("S 1\n", 4));
+            m_Device.SendCommand("S 1\n");
     }
 
     void SetPlatformLights(const char *pLightData)
@@ -817,6 +828,7 @@ private:
     /// - Sleep interval is configurable via SMX_SetPollingRate (default: 1000us)
     void USBPollingThreadMain()
     {
+        m_USBPollingThreadId = this_thread::get_id();
         while(!m_bShutdown)
         {
             bool bHasReport6Data = false;
@@ -850,6 +862,7 @@ private:
     /// - Waits for Report 6 data or timeout before the next iteration
     void ThreadMain()
     {
+        m_MainThreadId = this_thread::get_id();
         m_Lock.lock();
         while(!m_bShutdown)
         {
@@ -869,9 +882,11 @@ private:
             }
 
             // Correct device ordering BEFORE firing Connected callbacks.
-            // This ensures SMX_GetInfo(pad) returns the correct device when
-            // the callback handler queries it.
-            const bool bSwapped = CorrectDeviceOrder();
+            // Only needed when a device just connected — ordering is stable otherwise.
+            const bool bDeviceJustConnected =
+                (!bWasConnected[0] && m_Devices[0].IsConnected()) ||
+                (!bWasConnected[1] && m_Devices[1].IsConnected());
+            const bool bSwapped = bDeviceJustConnected && CorrectDeviceOrder();
 
             // Detect which slots just transitioned to connected, accounting for swap.
             bool bJustConnected[2] = {
@@ -926,6 +941,12 @@ private:
         // Skip enumeration if both device slots are already occupied.
         if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
             return;
+
+        // Rate-limit enumeration to once per second to reduce syscalls.
+        double fNow = GetMonotonicTime();
+        if(fNow - m_fLastEnumerationTime < 1.0)
+            return;
+        m_fLastEnumerationTime = fNow;
 
         // Enumerate SMX devices via the HID enumerator.
         auto devs = m_pEnumerator->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
@@ -986,10 +1007,12 @@ private:
             m_Devices[0] = std::move(m_Devices[1]);
             m_Devices[1] = std::move(temp);
 
-            // Re-bind callbacks after swap since the captured 'this' pointers
-            // in the lambdas now point to the wrong SMXDevice objects.
+            // Re-bind callbacks and pad indices after swap since the devices
+            // are now in different slots.
             m_Devices[0].SetConnectionCallbacks();
             m_Devices[1].SetConnectionCallbacks();
+            m_Devices[0].SetPadIndex(0);
+            m_Devices[1].SetPadIndex(1);
         }
         return bSwap;
     }
@@ -997,6 +1020,8 @@ private:
     recursive_mutex m_Lock;
     thread m_Thread;
     thread m_USBPollingThread;
+    thread::id m_MainThreadId;
+    thread::id m_USBPollingThreadId;
     condition_variable_any m_Cond;
     atomic<bool> m_bShutdown{false};
     atomic<int> m_iMainThreadSleepMs{50};
@@ -1007,6 +1032,7 @@ private:
     PanelTestMode m_PanelTestMode = PanelTestMode_Off;
     PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
     double m_fLastPanelTestModeSentAt = 0;
+    double m_fLastEnumerationTime = 0;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -1035,7 +1061,11 @@ shared_ptr<SMXManager> g_pSMX;
 /// @param pUser Application-defined pointer passed to all callbacks for context.
 SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 {
-    if(g_pSMX) return;
+    if(g_pSMX)
+    {
+        Log("SMX_Start called while already running; ignoring.");
+        return;
+    }
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
@@ -1057,9 +1087,7 @@ SMX_API void SMX_Stop()
 /// @param callback Function that receives log strings. Can be nullptr to disable.
 SMX_API void SMX_SetLogCallback(SMXLogCallback callback)
 {
-    SetLogCallback([callback](const string &log) {
-        callback(log.c_str());
-    });
+    SetLogCallback(callback);
 }
 
 /// Queries information about a connected device.

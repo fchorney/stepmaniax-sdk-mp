@@ -34,9 +34,9 @@ SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_bHadReadError(other.m_bHadReadError.load()),
     m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
+    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback)),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
-    m_pCurrentCommand(std::move(other.m_pCurrentCommand)),
-    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback))
+    m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
 }
 
@@ -133,8 +133,7 @@ void SMXDeviceConnection::Update(string &sError)
         return;
     }
 
-    CheckReads(sError);
-    if(!sError.empty()) return;
+    CheckReads();
     CheckWrites(sError);
 }
 
@@ -153,7 +152,7 @@ bool SMXDeviceConnection::ReadPacket(string &out)
 /// Called by the main I/O thread to handle commands and config updates.
 /// Report 3 (input state) packets are handled entirely by the USB polling thread.
 /// Handles command timeouts, fragmentation flags, and command callbacks.
-void SMXDeviceConnection::CheckReads(string &sError)
+void SMXDeviceConnection::CheckReads()
 {
     // Check if current command has timed out (2 second limit).
     if(m_pCurrentCommand && m_pCurrentCommand->m_bSent)
@@ -391,7 +390,10 @@ bool SMXDeviceConnection::PollUSBData()
     // Read and parse HID packets directly from the device.
     // The common case is a single 3-byte Report 3 (input state) packet per call.
     // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
-    std::string report6Packets;
+    // Report 6 packets are accumulated in a stack buffer to avoid heap allocation
+    // in the common case (config responses are typically < 512 bytes).
+    char report6Buf[512];
+    size_t report6Len = 0;
     uint8_t rawbuf[HID_PACKET_SIZE];
 
     while(true)
@@ -433,15 +435,18 @@ bool SMXDeviceConnection::PollUSBData()
             const int packetLen = 3 + payloadSize;
             if(res < packetLen)
                 continue;
+            if(report6Len + packetLen > sizeof(report6Buf))
+                break;
 
-            report6Packets.append(reinterpret_cast<char*>(rawbuf), packetLen);
+            memcpy(report6Buf + report6Len, rawbuf, packetLen);
+            report6Len += packetLen;
         }
     }
 
-    if(!report6Packets.empty())
+    if(report6Len > 0)
     {
         lock_guard<mutex> lock(m_Report6BufferMutex);
-        m_sReport6Buffer.append(report6Packets);
+        m_sReport6Buffer.append(report6Buf, report6Len);
         return true;
     }
     return false;

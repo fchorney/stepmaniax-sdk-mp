@@ -47,3 +47,12 @@ TEST_CASE("ssprintf handles empty format") {
 TEST_CASE("ssprintf handles multiple args") {
     CHECK(SMX::ssprintf("%d %s %x", 10, "hi", 0xAB) == "10 hi ab");
 }
+
+TEST_CASE("ssprintf handles strings longer than 256 chars") {
+    string padding(300, 'x');
+    string result = SMX::ssprintf("prefix_%s_suffix", padding.c_str());
+    CHECK(result.size() == 7 + 300 + 7);  // "prefix_" + 300x + "_suffix"
+    CHECK(result.substr(0, 7) == "prefix_");
+    CHECK(result.substr(result.size() - 7) == "_suffix");
+    CHECK(result.substr(7, 300) == padding);
+}

@@ -488,3 +488,71 @@ TEST_CASE("SMX_SetTestMode sends y command to device") {
     SMX_SetTestMode(0, SensorTestMode_Off);
     SMX_Stop();
 }
+
+TEST_CASE("SMX_SetConfig rate-limits writes to once per second") {
+    SMXConfig deviceConfig = {};
+    deviceConfig.panelDebounceMicroseconds = 4000;
+
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
+    pFakeDevice->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    });
+    REQUIRE(bConnected);
+
+    pFakeDevice->ClearCapturedWrites();
+
+    // First SetConfig — should send immediately
+    SMXConfig cfg1 = deviceConfig;
+    cfg1.panelDebounceMicroseconds = 1111;
+    SMX_SetConfig(0, &cfg1);
+
+    bool bFirstWrite = WaitFor([&]() {
+        auto writes = pFakeDevice->GetCapturedWrites();
+        for(const auto &w : writes)
+            if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND && w[2] >= 1 && w[3] == 'W')
+                return true;
+        return false;
+    });
+    REQUIRE(bFirstWrite);
+
+    // Count 'W' commands so far
+    auto countWrites = [&]() {
+        int count = 0;
+        auto writes = pFakeDevice->GetCapturedWrites();
+        for(const auto &w : writes)
+            if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND && w[2] >= 1 && w[3] == 'W')
+                count++;
+        return count;
+    };
+
+    int iFirstCount = countWrites();
+
+    // Second SetConfig immediately after — should be rate-limited
+    SMXConfig cfg2 = deviceConfig;
+    cfg2.panelDebounceMicroseconds = 2222;
+    SMX_SetConfig(0, &cfg2);
+
+    // Wait 200ms — the second write should NOT have been sent yet
+    this_thread::sleep_for(chrono::milliseconds(200));
+    CHECK(countWrites() == iFirstCount);
+
+    // Wait for the rate limit to expire (total ~1.2s from first write)
+    bool bSecondWrite = WaitFor([&]() {
+        return countWrites() > iFirstCount;
+    }, 3000);
+    CHECK(bSecondWrite);
+
+    SMX_Stop();
+}
