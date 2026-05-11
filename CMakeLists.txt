@@ -21,8 +21,9 @@ if(APPLE)
 endif()
 
 # Find hidapi
+# On Windows with vcpkg, skip pkg-config and use find_package directly.
 find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
+if(PKG_CONFIG_FOUND AND NOT WIN32)
     pkg_check_modules(HIDAPI hidapi-hidraw)
     if(NOT HIDAPI_FOUND)
         pkg_check_modules(HIDAPI hidapi-libusb)
