@@ -275,11 +275,18 @@ SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
 Build with coverage instrumentation to see which lines are exercised by tests:
 
 ```bash
+# Install lcov if needed:
+# Debian/Ubuntu: sudo apt install lcov
+# Fedora: sudo dnf install lcov
+# macOS: brew install lcov
+# Arch: sudo pacman -S lcov
+
 mkdir build && cd build
 cmake .. -DBUILD_TESTS=ON -DENABLE_COVERAGE=ON
 make
 ./smx-tests
-lcov --capture --directory . --output-file coverage.info
+lcov --capture --directory . --output-file coverage_raw.info
+lcov --extract coverage_raw.info '*/src/*' --output-file coverage.info
 genhtml coverage.info --output-directory coverage_report
 ```
 
