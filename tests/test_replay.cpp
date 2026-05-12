@@ -118,7 +118,7 @@ static bool WritesContainCommand(const vector<vector<uint8_t>> &writes, const st
 
 TEST_CASE("Replay: P1 solo connection")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
+    string sFile = CapturePath("connection/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
         MESSAGE("Capture not found: ", sFile, " — skipping");
@@ -156,7 +156,7 @@ TEST_CASE("Replay: P1 solo connection")
 
 TEST_CASE("Replay: P2 solo connection")
 {
-    string sFile = CapturePath("p2_solo/device_0.smxhid");
+    string sFile = CapturePath("connection/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
         MESSAGE("Capture not found: ", sFile, " — skipping");
@@ -199,8 +199,8 @@ TEST_CASE("Replay: P2 solo connection")
 
 TEST_CASE("Replay: both pads connection")
 {
-    string sFile0 = CapturePath("both_pads/device_0.smxhid");
-    string sFile1 = CapturePath("both_pads/device_1.smxhid");
+    string sFile0 = CapturePath("connection/device_0.smxhid");
+    string sFile1 = CapturePath("connection/device_1.smxhid");
     if(!CaptureExists(sFile0) || !CaptureExists(sFile1))
     {
         MESSAGE("Captures not found — skipping");
@@ -237,13 +237,10 @@ TEST_CASE("Replay: both pads connection")
 
 TEST_CASE("Replay: force recalibration command in capture")
 {
-    // Try p1_solo first, fall back to both_pads
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("force_recalibration/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 
@@ -279,12 +276,10 @@ TEST_CASE("Replay: force recalibration command in capture")
 
 TEST_CASE("Replay: panel test mode command in capture")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("panel_test_mode/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 
@@ -306,34 +301,21 @@ TEST_CASE("Replay: panel test mode command in capture")
     CHECK(info.m_bConnected);
 
     // Verify the capture contains panel test mode commands from the original recording.
-    // These are only present if the capture was recorded during a test that exercised
-    // panel test mode (e.g., the comprehensive command integration test).
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
-    bool bHasTestModeOn = WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 1\n", 4));
-    bool bHasTestModeOff = WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 0\n", 4));
-    if(!bHasTestModeOn && !bHasTestModeOff)
-    {
-        MESSAGE("Capture does not contain panel test mode commands — skipping verification");
-    }
-    else
-    {
-        CHECK(bHasTestModeOn);
-        CHECK(bHasTestModeOff);
-        MESSAGE("Panel test mode commands verified in replay writes");
-    }
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 1\n", 4)));
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 0\n", 4)));
+    MESSAGE("Panel test mode commands verified in replay writes");
 
     SMX_Stop();
 }
 
 TEST_CASE("Replay: re-enable auto lights command in capture")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("reenable_auto_lights/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 

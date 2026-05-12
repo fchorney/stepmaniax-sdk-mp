@@ -70,76 +70,22 @@ static bool WaitFor(function<bool()> cond, int iTimeoutMs = 5000)
     return true;
 }
 
-TEST_CASE("Real hardware: comprehensive command test")
+// --- Helper: connect with optional recording to a subdirectory ---
+
+static bool StartWithRecording(const string &sSubDir, atomic<int> &iConnected, int iExpected)
 {
-    // Check if hardware is present
-    auto pEnum = CreateHIDAPIEnumerator();
-    pEnum->Init();
-    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
-    pEnum->Exit();
-
-    if(devices.empty())
-    {
-        MESSAGE("No SMX hardware detected, skipping integration test");
-        return;
-    }
-
-    int iDeviceCount = static_cast<int>(devices.size());
-    MESSAGE("Found ", iDeviceCount, " SMX device(s)");
-
-    // Determine capture subdirectory. For a single device, we need to connect
-    // first to know if it's P1 or P2, so we defer directory creation.
-    string sCaptureDir = GetCaptureDir();
-    string sSubDir;
-    if(!sCaptureDir.empty() && iDeviceCount >= 2)
-        sSubDir = sCaptureDir + "/both_pads";
-
-    // Create enumerator (optionally recording)
     unique_ptr<IHIDEnumerator> pEnumerator;
-    if(!sSubDir.empty())
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
     {
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-    else if(sCaptureDir.empty())
-    {
-        pEnumerator = CreateHIDAPIEnumerator();
+        string sDir = sCaptureDir + "/" + sSubDir;
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sDir));
     }
     else
     {
-        // Single device — we'll determine P1/P2 after connection.
-        // Use a non-recording enumerator first to detect, then restart with recording.
-        // Actually, just connect without recording, check P1/P2, stop, then reconnect with recording.
         pEnumerator = CreateHIDAPIEnumerator();
     }
 
-    // For single-device + capture: detect P1/P2 first, then re-run with recording
-    if(!sCaptureDir.empty() && iDeviceCount == 1 && sSubDir.empty())
-    {
-        atomic<int> iConnected{0};
-        SMX_StartWithEnumerator(
-            [](int, SMXUpdateCallbackReason reason, void *pUser) {
-                if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                    static_cast<atomic<int>*>(pUser)->fetch_add(1);
-            },
-            &iConnected, std::move(pEnumerator));
-
-        REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
-
-        // Determine P1 or P2
-        SMXInfo info0, info1;
-        SMX_GetInfo(0, &info0);
-        SMX_GetInfo(1, &info1);
-        bool bIsP2 = info1.m_bConnected && info1.m_bIsPlayer2;
-        SMX_Stop();
-
-        sSubDir = sCaptureDir + (bIsP2 ? "/p2_solo" : "/p1_solo");
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-
-    // Start SDK
-    atomic<int> iConnected{0};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
@@ -147,83 +93,119 @@ TEST_CASE("Real hardware: comprehensive command test")
         },
         &iConnected, std::move(pEnumerator));
 
-    REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
+    return WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000);
+}
+
+static int DetectHardware()
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+    return static_cast<int>(devices.size());
+}
+
+TEST_CASE("Real hardware: connection and device info")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("connection", iConnected, iDeviceCount));
+
+    int iConnectedCount = 0;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(!info.m_bConnected) continue;
+        iConnectedCount++;
+        CHECK(info.m_iFirmwareVersion > 0);
+        MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
+                " p2=", info.m_bIsPlayer2,
+                " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
+    }
+    CHECK(iConnectedCount == iDeviceCount);
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: force recalibration")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("force_recalibration", iConnected, iDeviceCount));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+        {
+            SMX_ForceRecalibration(i);
+            MESSAGE("Sent force recalibration to pad ", i);
+        }
+    }
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after recalibration");
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: panel test mode")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("panel_test_mode", iConnected, iDeviceCount));
+
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+    MESSAGE("Enabled pressure test mode");
+    this_thread::sleep_for(chrono::seconds(2));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected during test mode");
+    }
+
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+    MESSAGE("Disabled panel test mode");
     this_thread::sleep_for(chrono::milliseconds(200));
 
-    // --- Verify connection ---
-    SUBCASE("connection") {
-        int iConnectedCount = 0;
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(!info.m_bConnected)
-                continue;
-            iConnectedCount++;
-            CHECK(info.m_iFirmwareVersion > 0);
-            MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
-                    " p2=", info.m_bIsPlayer2,
-                    " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-        }
-        CHECK(iConnectedCount == iDeviceCount);
-    }
+    SMX_Stop();
+}
 
-    // --- Force recalibration ---
-    SUBCASE("force recalibration") {
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-            {
-                SMX_ForceRecalibration(i);
-                MESSAGE("Sent force recalibration to pad ", i);
-            }
-        }
-        this_thread::sleep_for(chrono::milliseconds(500));
+TEST_CASE("Real hardware: re-enable auto lights")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
 
-        // Verify still connected
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected after recalibration");
-        }
-    }
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("reenable_auto_lights", iConnected, iDeviceCount));
 
-    // --- Panel test mode ---
-    SUBCASE("panel test mode") {
-        SMX_SetPanelTestMode(PanelTestMode_PressureTest);
-        MESSAGE("Enabled pressure test mode");
-        this_thread::sleep_for(chrono::seconds(2));
+    SMX_ReenableAutoLights();
+    MESSAGE("Sent re-enable auto lights");
+    this_thread::sleep_for(chrono::milliseconds(500));
 
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected during test mode");
-        }
-
-        SMX_SetPanelTestMode(PanelTestMode_Off);
-        MESSAGE("Disabled panel test mode");
-        this_thread::sleep_for(chrono::milliseconds(200));
-    }
-
-    // --- Re-enable auto lights ---
-    SUBCASE("re-enable auto lights") {
-        SMX_ReenableAutoLights();
-        MESSAGE("Sent re-enable auto lights");
-        this_thread::sleep_for(chrono::milliseconds(500));
-
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected after re-enable auto lights");
-        }
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after re-enable auto lights");
     }
 
     SMX_Stop();
@@ -847,7 +829,7 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
         r = uint8_t(rf * 255); g = uint8_t(gf * 255); b = uint8_t(bf * 255);
     };
 
-    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 500ms delay.
+    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 100ms delay.
     // Each frame is a solid color across all panels.
     const int W = 23, H = 24;
     const int numFrames = 6;
@@ -881,9 +863,9 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
     // Frames
     for(int f = 0; f < numFrames; f++)
     {
-        // GCE: 500ms delay
+        // GCE: 100ms delay
         pushByte(0x21); pushByte(0xF9); pushByte(4);
-        pushByte(0); pushLE16(50); pushByte(0); pushByte(0);
+        pushByte(0); pushLE16(10); pushByte(0); pushByte(0);
 
         // Image descriptor
         pushByte(0x2C);
