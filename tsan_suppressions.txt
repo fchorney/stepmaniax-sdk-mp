@@ -1,0 +1,22 @@
+# ThreadSanitizer suppressions for stepmaniax-sdk-mp
+#
+# These suppressions cover known false positives and test-level races that
+# don't represent bugs in the SDK itself.
+#
+# 1. SMXDevice::GetInfo/GetConfig reads m_pLock (a pointer set once during
+#    construction that always points to SMXManager::m_Lock). TSan flags this
+#    because CorrectDeviceOrder moves SMXDevice objects under the lock, but
+#    the m_pLock pointer value is immediately reassigned to the same stable
+#    address after the move. The actual mutex acquisition inside GetInfo/GetConfig
+#    ensures all data access is properly synchronized.
+race:SMX::SMXDevice::GetInfo
+race:SMX::SMXDevice::GetConfig
+
+# 2. Test callback variables (bool/int on stack) written from the I/O thread
+#    and polled from the main test thread via WaitFor(). These are synchronized
+#    via sleep-polling in tests (not a pattern used in production code).
+race:DOCTEST_ANON_FUNC_*
+
+# 3. Test ReplayHIDEnumerator stores device pointers in a vector modified by
+#    the I/O thread and read by the main test thread after WaitFor completes.
+race:ReplayHIDEnumerator::Open

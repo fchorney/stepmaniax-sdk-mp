@@ -189,6 +189,10 @@ if(BUILD_TESTS)
         target_link_directories(smx-tests PRIVATE ${HIDAPI_LIBRARY_DIRS})
     endif()
     add_test(NAME smx-tests COMMAND smx-tests)
+    if(ENABLE_TSAN)
+        set_tests_properties(smx-tests PROPERTIES
+            ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan_suppressions.txt")
+    endif()
 endif()
 
 if(BUILD_INTEGRATION_TESTS)

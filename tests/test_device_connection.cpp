@@ -477,13 +477,13 @@ TEST_CASE("Pending command callback does not fire without response") {
     // Since GetMonotonicTime uses a real clock, we can't easily fake it.
     // Instead, verify the timeout logic structurally: send a command,
     // don't respond, and verify it stays in flight.
+    bool bCallbackFired = false;
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
     conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
     CompleteDeviceInfoHandshake(conn, pFake);
     conn.SetActive(true);
 
-    bool bCallbackFired = false;
     conn.SendCommand("X", [&](string) { bCallbackFired = true; });
 
     string sError;

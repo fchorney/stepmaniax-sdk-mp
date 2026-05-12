@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 #include "test_helpers_manager.h"
 
+#include <atomic>
+
 using namespace std;
 using namespace SMX;
 using namespace SMXTestHelpers;
@@ -20,10 +22,10 @@ TEST_CASE("Single P1 device is discovered and connected") {
     pFakeDevice->SetConfigResponse(MakeConfigResponse());
 
     SMXInfo infoResult = {};
-    int connectedPad = -1;
+    atomic<int> connectedPad{-1};
     auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_Connected)
-            *static_cast<int*>(pUser) = pad;
+            static_cast<atomic<int>*>(pUser)->store(pad);
     };
 
     SMX_StartWithEnumerator(callback, &connectedPad, unique_ptr<IHIDEnumerator>(pEnum));
@@ -112,10 +114,10 @@ TEST_CASE("Device disconnect fires callback and clears slot") {
     pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
     pFakeDevice->SetConfigResponse(MakeConfigResponse());
 
-    int iDisconnectedPad = -1;
+    atomic<int> iDisconnectedPad{-1};
     auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_Disconnected)
-            *static_cast<int*>(pUser) = pad;
+            static_cast<atomic<int>*>(pUser)->store(pad);
     };
 
     SMX_StartWithEnumerator(callback, &iDisconnectedPad, unique_ptr<IHIDEnumerator>(pEnum));
@@ -311,10 +313,10 @@ TEST_CASE("Device with firmware >= 5 uses 'G' (new config format)") {
     pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
     pFakeDevice->SetConfigResponse(MakeConfigResponse());
 
-    int iConfigUpdated = 0;
+    atomic<int> iConfigUpdated{0};
     auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_ConfigUpdated)
-            (*static_cast<int*>(pUser))++;
+            static_cast<atomic<int>*>(pUser)->fetch_add(1);
     };
 
     SMX_StartWithEnumerator(callback, &iConfigUpdated, unique_ptr<IHIDEnumerator>(pEnum));
@@ -374,17 +376,17 @@ TEST_CASE("Device reconnects successfully after read error disconnect") {
     pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
     pFakeDevice->SetConfigResponse(MakeConfigResponse());
 
-    int iConnectedCount = 0;
-    int iDisconnectedCount = 0;
-    struct CallbackData { int *pConnected; int *pDisconnected; };
+    atomic<int> iConnectedCount{0};
+    atomic<int> iDisconnectedCount{0};
+    struct CallbackData { atomic<int> *pConnected; atomic<int> *pDisconnected; };
     CallbackData cbData = {&iConnectedCount, &iDisconnectedCount};
 
     auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         auto *data = static_cast<CallbackData*>(pUser);
         if(reason & SMXUpdateCallback_Connected)
-            (*data->pConnected)++;
+            data->pConnected->fetch_add(1);
         if(reason & SMXUpdateCallback_Disconnected)
-            (*data->pDisconnected)++;
+            data->pDisconnected->fetch_add(1);
     };
 
     SMX_StartWithEnumerator(callback, &cbData, unique_ptr<IHIDEnumerator>(pEnum));

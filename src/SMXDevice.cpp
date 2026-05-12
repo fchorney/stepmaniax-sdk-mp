@@ -284,6 +284,7 @@ void SMXDevice::HandlePackets()
         if(buf[0] == 'g')
         {
             vector<uint8_t> raw(buf.begin() + 2, buf.begin() + 2 + iSize);
+            raw.resize(sizeof(OldSMXConfig), 0);  // Pad to full struct size for safe access
             ConvertToNewConfig(raw, m_Config);
         }
         else

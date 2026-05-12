@@ -5,6 +5,7 @@
 #include "SMXHIDRecorder.h"
 #include "SMXProtocolConstants.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -135,11 +136,11 @@ TEST_CASE("Replay: connection")
         pEnum->AddCapture(sFile1);
 
     int iExpected = bHasSecondDevice ? 2 : 1;
-    int iConnectedCount = 0;
+    atomic<int> iConnectedCount{0};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                (*static_cast<int *>(pUser))++;
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
         },
         &iConnectedCount, unique_ptr<IHIDEnumerator>(pEnum));
 
