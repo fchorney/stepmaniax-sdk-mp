@@ -15,7 +15,7 @@ This SDK uses a two-thread design (vs the original's single I/O thread):
 
 Key design decisions:
 - Uses **hidapi** behind an abstraction layer (`IHIDDevice`/`IHIDEnumerator` interfaces in `SMXHIDInterface.h`). Only `SMXHIDInterface.cpp` touches hidapi directly, making the HID backend swappable and testable.
-- Core logic is consolidated into **SMX.cpp** (helpers, SMXDevice, SMXManager, public API) rather than spread across many files.
+- Core logic is split into logical files: **SMXHelpers** (utilities), **SMXDevice** (per-controller logic), **SMXManager** (orchestration/threading), and **SMX.cpp** (public C API).
 - Only `SMX_*` public API symbols are exported; all internal symbols are hidden.
 - C++14 standard, no higher.
 
@@ -47,9 +47,16 @@ New dependencies should not be added unless there is a compelling reason. The SD
 ```
 ├── include/SMX.h                    # Public API header (only exported interface)
 ├── src/
-│   ├── SMX.cpp                      # Helpers, SMXDevice, SMXManager, API implementation
+│   ├── SMX.cpp                      # Public C API and test-only API
+│   ├── SMXHelpers.h                 # Internal utility function declarations
+│   ├── SMXHelpers.cpp               # Logging, timing, formatting, binary conversion
+│   ├── SMXDevice.h                  # Per-controller device class (header)
+│   ├── SMXDevice.cpp                # Per-controller device class (implementation)
+│   ├── SMXManager.h                 # Device manager / orchestration (header)
+│   ├── SMXManager.cpp               # Device manager / orchestration (implementation)
 │   ├── SMXDeviceConnection.h        # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp      # HID I/O class (implementation)
+│   ├── SMXProtocolConstants.h       # Device protocol constants (LEDs, timing, USB IDs)
 │   ├── SMXHIDInterface.h            # HID abstraction interfaces
 │   ├── SMXHIDInterface.cpp          # Real hidapi-backed implementation
 │   ├── SMXHIDRecorder.h             # HID traffic record/replay
@@ -108,9 +115,15 @@ Shared test helpers (fake devices, packet builders, utility functions) that serv
 
 The `SMXHIDRecorder` module (`src/SMXHIDRecorder.h/.cpp`) provides:
 
-- **RecordingHIDDevice / RecordingHIDEnumerator** — decorator wrappers that log all HID reads/writes with timestamps to binary `.smxhid` capture files. Used during integration tests to capture real device traffic.
+- **RecordingHIDDevice / RecordingHIDEnumerator** — decorator wrappers that log all HID reads/writes with timestamps to binary `.smxhid` capture files.
 - **ReplayHIDDevice** — loads a `.smxhid` capture file and replays reads in order, allowing regression tests to run against real recorded traffic without hardware.
 - **Binary format:** `"SMXHID\x01"` magic header + records of `[type:1][timestamp_us:8][size:2][data:size]`.
+
+Recording is built into the shared library. Set the `SMX_CAPTURE_DIR` environment variable before launching any application using the SDK to automatically record all HID traffic:
+
+```bash
+SMX_CAPTURE_DIR=/tmp/captures ./your-application
+```
 
 ### Integration tests (real hardware)
 

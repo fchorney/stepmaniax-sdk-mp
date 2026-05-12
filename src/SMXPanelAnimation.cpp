@@ -5,6 +5,7 @@
 // SMX_SetLights2 internally.
 
 #include "SMX.h"
+#include "SMXProtocolConstants.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18,12 +19,29 @@
 #include <thread>
 #include <vector>
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4244) // conversion from '__int64' to 'long' inside gif_load
+#endif
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
 #include "vendor/gif_load.h"
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 using namespace std;
 
-// Declared in SMX.cpp
+// Declared in SMXHelpers.h
 namespace SMX { double GetMonotonicTime(); }
+
+// Declared in SMX.cpp — skips TemporaryStop (for use by animation thread only).
+void SMX_SetLights2_Internal(const char *lightData, int lightDataSize);
 
 namespace {
 
@@ -56,8 +74,9 @@ void GifFrameCallback(void *data, struct GIF_WHDR *whdr)
         state->canvas.assign(whdr->xdim * whdr->ydim * 4, 0);
     }
 
-    // Save canvas for GIF_PREV disposal.
-    state->prevCanvas = state->canvas;
+    // Save canvas for GIF_PREV disposal (only when needed).
+    if(whdr->mode == GIF_PREV)
+        state->prevCanvas = state->canvas;
 
     // Render this frame's pixels onto the canvas.
     int frxd = whdr->frxd, fryd = whdr->fryd;
@@ -244,7 +263,6 @@ mutex g_AnimMutex;
 PanelAnimationData g_Animations[2][2]; // [pad][type]
 AnimationPlaybackState g_PlaybackState[2][2][9]; // [pad][type][panel]
 atomic<bool> g_bAutoAnimating{false};
-atomic<bool> g_bAnimThreadSending{false}; // true while animation thread is calling SetLights2
 thread g_AnimThread;
 atomic<bool> g_bAnimShutdown{false};
 double g_fStopAnimatingUntil = 0;
@@ -254,6 +272,7 @@ double g_fStopAnimatingUntil = 0;
 void AnimationThreadMain()
 {
     const int iFrameMs = 33; // ~30 FPS
+    vector<char> lightData(2 * BYTES_PER_PAD_25, 0); // Reused each frame, max possible size
 
     while(!g_bAnimShutdown.load(memory_order_relaxed))
     {
@@ -268,6 +287,9 @@ void AnimationThreadMain()
 
         // Build lights data for both pads.
         int iLedsPerPanel = 25;
+        int iBytesPerPanel;
+        int iBytesPerPad;
+
         {
             lock_guard<mutex> lock(g_AnimMutex);
 
@@ -276,14 +298,10 @@ void AnimationThreadMain()
                 for(int type = 0; type < 2; type++)
                     if(!g_Animations[pad][type].durations.empty())
                         iLedsPerPanel = g_Animations[pad][type].numLeds;
-        }
 
-        const int iBytesPerPanel = iLedsPerPanel * 3;
-        const int iBytesPerPad = 9 * iBytesPerPanel;
-        vector<char> lightData(2 * iBytesPerPad, 0);
-
-        {
-            lock_guard<mutex> lock(g_AnimMutex);
+            iBytesPerPanel = iLedsPerPanel * 3;
+            iBytesPerPad = 9 * iBytesPerPanel;
+            memset(lightData.data(), 0, 2 * iBytesPerPad);
 
             for(int pad = 0; pad < 2; pad++)
             {
@@ -360,11 +378,9 @@ void AnimationThreadMain()
             }
         }
 
-        // Send lights. Set flag so TemporaryStop knows not to pause us.
+        // Send lights directly without triggering TemporaryStop on ourselves.
         int totalSize = iLedsPerPanel == 25 ? 1350 : 864;
-        g_bAnimThreadSending.store(true, memory_order_relaxed);
-        SMX_SetLights2(lightData.data(), totalSize);
-        g_bAnimThreadSending.store(false, memory_order_relaxed);
+        SMX_SetLights2_Internal(lightData.data(), totalSize);
 
         // Sleep for remainder of frame.
         auto tFrameEnd = tFrameStart + chrono::milliseconds(iFrameMs);
@@ -451,11 +467,8 @@ SMX_API void SMX_LightsAnimation_SetAuto(bool enable)
 // Called from SMX_SetLights2 to temporarily pause animation.
 void SMXLightsAnimation_TemporaryStop()
 {
-    // Don't pause if the animation thread itself is sending lights.
-    if(g_bAnimThreadSending.load(memory_order_relaxed))
-        return;
     if(g_bAutoAnimating.load(memory_order_relaxed))
-        g_fStopAnimatingUntil = SMX::GetMonotonicTime() + 0.1; // 100ms
+        g_fStopAnimatingUntil = SMX::GetMonotonicTime() + ANIMATION_PAUSE_DURATION;
 }
 
 // ---------------------------------------------------------------------------
@@ -679,10 +692,10 @@ SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, 
         for(int f = 0; f < (int)panelFrames[panel].size(); f++)
             PackGraphic(panelFrames[panel][f], palette, allPanelData[panel].graphics[firstGraphic + f]);
 
-        // Apply 0.6666 color scaling to palette (same as SetLights).
+        // Apply color scaling to palette (same as SetLights).
         for(auto &color : palette.colors)
             for(int c = 0; c < 3; c++)
-                color.rgb[c] = uint8_t(color.rgb[c] * 0.6666f);
+                color.rgb[c] = uint8_t(color.rgb[c] * LED_COLOR_SCALE);
     }
 
     // Build master timing data.

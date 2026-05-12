@@ -7,6 +7,7 @@
 #include "SMX.h"
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
+#include "SMXProtocolConstants.h"
 
 #include <chrono>
 #include <cstring>

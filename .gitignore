@@ -1,2 +1,9 @@
 /build*
 /logic_capture
+
+# Coverage
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+coverage_report/

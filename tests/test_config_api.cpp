@@ -178,7 +178,7 @@ TEST_CASE("SMX_SetConfig fires ConfigUpdated callback after write") {
     pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
 
     int iConfigUpdatedCount = 0;
-    auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+    auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_ConfigUpdated)
             (*static_cast<int*>(pUser))++;
     };

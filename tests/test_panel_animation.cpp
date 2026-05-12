@@ -193,39 +193,39 @@ TEST_CASE("SMX_LightsAnimation_Load rejects null data") {
 TEST_CASE("SMX_LightsAnimation_Load rejects invalid pad") {
     auto gif = MakeSolidGif(14, 15, 255, 0, 0);
     const char *error = nullptr;
-    CHECK_FALSE(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 2, SMX_LightsType_Released, &error));
+    CHECK_FALSE(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 2, SMX_LightsType_Released, &error));
     CHECK(string(error).find("Invalid pad") != string::npos);
 }
 
 TEST_CASE("SMX_LightsAnimation_Load rejects wrong dimensions") {
     auto gif = MakeSolidGif(10, 10, 255, 0, 0);
     const char *error = nullptr;
-    CHECK_FALSE(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK_FALSE(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
     CHECK(string(error).find("14x15 or 23x24") != string::npos);
 }
 
 TEST_CASE("SMX_LightsAnimation_Load accepts 14x15 GIF") {
     auto gif = MakeSolidGif(14, 15, 255, 0, 0);
     const char *error = nullptr;
-    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
 }
 
 TEST_CASE("SMX_LightsAnimation_Load accepts 23x24 GIF") {
     auto gif = MakeSolidGif(23, 24, 0, 255, 0);
     const char *error = nullptr;
-    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
 }
 
 TEST_CASE("SMX_LightsAnimation_Load accepts animated GIF") {
     auto gif = MakeAnimatedGif(14, 15, 255, 0, 0, 0, 0, 255, 3);
     const char *error = nullptr;
-    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
 }
 
 TEST_CASE("SMX_LightsAnimation_Load accepts pressed animation") {
     auto gif = MakeSolidGif(14, 15, 0, 0, 255);
     const char *error = nullptr;
-    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 1, SMX_LightsType_Pressed, &error));
+    CHECK(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 1, SMX_LightsType_Pressed, &error));
 }
 
 TEST_CASE("SMX_LightsAnimation_Load rejects corrupt data") {
@@ -243,7 +243,7 @@ TEST_CASE("SMX_LightsAnimation_SetAuto can be enabled and disabled") {
     // Load an animation first
     auto gif = MakeSolidGif(14, 15, 100, 100, 100);
     const char *error = nullptr;
-    REQUIRE(SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    REQUIRE(SMX_LightsAnimation_Load((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
 
     // Enable — should not crash
     SMX_LightsAnimation_SetAuto(true);
@@ -278,26 +278,26 @@ TEST_CASE("SMX_LightsUpload_PrepareUpload rejects null data") {
 TEST_CASE("SMX_LightsUpload_PrepareUpload rejects 14x15 GIF") {
     auto gif = MakeSolidGif(14, 15, 255, 0, 0);
     const char *error = nullptr;
-    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
     CHECK(string(error).find("23x24") != string::npos);
 }
 
 TEST_CASE("SMX_LightsUpload_PrepareUpload accepts 23x24 GIF") {
     auto gif = MakeSolidGif(23, 24, 255, 0, 0);
     const char *error = nullptr;
-    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), (int)gif.size(), 0, SMX_LightsType_Released, &error));
 }
 
 TEST_CASE("SMX_LightsUpload_PrepareUpload accepts pressed type") {
     auto gif = MakeSolidGif(23, 24, 0, 255, 0);
     const char *error = nullptr;
-    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 1, SMX_LightsType_Pressed, &error));
+    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), (int)gif.size(), 1, SMX_LightsType_Pressed, &error));
 }
 
 TEST_CASE("SMX_LightsUpload_PrepareUpload rejects invalid pad") {
     auto gif = MakeSolidGif(23, 24, 255, 0, 0);
     const char *error = nullptr;
-    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 2, SMX_LightsType_Released, &error));
+    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), (int)gif.size(), 2, SMX_LightsType_Released, &error));
 }
 
 TEST_CASE("SMX_LightsUpload_BeginUpload calls callback with 100 when no data prepared") {

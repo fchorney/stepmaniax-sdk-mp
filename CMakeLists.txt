@@ -8,6 +8,11 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Suppress MSVC warnings about standard C functions (getenv, localtime, etc.)
+if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Hide symbols by default (only SMX_API symbols are exported)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
@@ -71,6 +76,10 @@ add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
     src/SMXHIDInterface.cpp
+    src/SMXHIDRecorder.cpp
+    src/SMXHelpers.cpp
+    src/SMXDevice.cpp
+    src/SMXManager.cpp
     src/SMXPanelAnimation.cpp
     src/SMX.cpp
 )
@@ -111,6 +120,30 @@ endif()
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_INTEGRATION_TESTS "Build integration tests (require real hardware)" OFF)
 
+# Coverage and sanitizers
+option(ENABLE_COVERAGE "Build with code coverage instrumentation (gcov)" OFF)
+option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
+option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN cannot be used simultaneously.")
+endif()
+
+if(ENABLE_COVERAGE)
+    add_compile_options(--coverage)
+    add_link_options(--coverage)
+endif()
+
+if(ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+
 if(BUILD_TESTS OR BUILD_INTEGRATION_TESTS)
     include(FetchContent)
     FetchContent_Declare(
@@ -140,6 +173,9 @@ if(BUILD_TESTS)
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXHelpers.cpp
+        src/SMXDevice.cpp
+        src/SMXManager.cpp
         src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )
@@ -158,6 +194,10 @@ if(BUILD_TESTS)
         target_link_directories(smx-tests PRIVATE ${HIDAPI_LIBRARY_DIRS})
     endif()
     add_test(NAME smx-tests COMMAND smx-tests)
+    if(ENABLE_TSAN)
+        set_tests_properties(smx-tests PROPERTIES
+            ENVIRONMENT "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan_suppressions.txt")
+    endif()
 endif()
 
 if(BUILD_INTEGRATION_TESTS)
@@ -170,6 +210,9 @@ if(BUILD_INTEGRATION_TESTS)
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXHelpers.cpp
+        src/SMXDevice.cpp
+        src/SMXManager.cpp
         src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )

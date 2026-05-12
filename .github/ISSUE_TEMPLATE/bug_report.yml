@@ -1,0 +1,99 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please fill in as much detail as possible.
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: e.g. Ubuntu 24.04, macOS 15.1, Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: compiler
+    attributes:
+      label: Compiler and version
+      placeholder: e.g. GCC 13.3, Clang 18, MSVC 2022
+    validations:
+      required: true
+
+  - type: input
+    id: hidapi
+    attributes:
+      label: hidapi version
+      description: "Linux: `pkg-config --modversion hidapi-hidraw`"
+      placeholder: e.g. 0.14.0
+    validations:
+      required: false
+
+  - type: input
+    id: firmware
+    attributes:
+      label: SMX pad firmware version
+      description: Printed by the SDK on connection (e.g. "Master version: 5")
+      placeholder: e.g. 5
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Call SMX_Start(...)
+        2. Connect pad
+        3. Call SMX_SetConfig(...)
+        4. Observe error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What actually happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Set a log callback or check stdout for SDK log messages.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: capture
+    attributes:
+      label: HID traffic capture
+      description: |
+        If this is a hardware-related issue, attach .smxhid capture files.
+        Recording is built into the library. Set the environment variable before running your app:
+        `SMX_CAPTURE_DIR=/tmp/captures ./your-application`
+        Captures are saved to a timestamped subdirectory (e.g. `/tmp/captures/2026-05-12_11-10-56/device_0.smxhid`).
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other information (screenshots, code snippets, related issues)
+    validations:
+      required: false

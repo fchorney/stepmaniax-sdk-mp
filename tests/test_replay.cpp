@@ -3,7 +3,9 @@
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 #include "SMXHIDRecorder.h"
+#include "SMXProtocolConstants.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -134,11 +136,11 @@ TEST_CASE("Replay: connection")
         pEnum->AddCapture(sFile1);
 
     int iExpected = bHasSecondDevice ? 2 : 1;
-    int iConnectedCount = 0;
+    atomic<int> iConnectedCount{0};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                (*static_cast<int *>(pUser))++;
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
         },
         &iConnectedCount, unique_ptr<IHIDEnumerator>(pEnum));
 
@@ -561,7 +563,7 @@ TEST_CASE("Replay: panel lights commands in capture")
             if(cmd == '2' || cmd == '3' || cmd == '4')
             {
                 // Check color bytes in the payload (skip the command byte itself)
-                for(size_t j = 4; j < 3 + w[2]; j++)
+                for(size_t j = 4; j < (size_t)(3 + w[2]); j++)
                 {
                     int val = static_cast<uint8_t>(w[j]);
                     if(val > iMaxColorValue)
