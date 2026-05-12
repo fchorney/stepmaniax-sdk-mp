@@ -32,7 +32,8 @@ This document traces the execution path of each public `SMX_*` API function thro
 │   │  m_iInputState update  │   │   ├─ CheckWrites() [send commands]   │
 │   └─ Report 6 → buffer     │   │   ├─ HandlePackets() [config/data]   │
 │      for main thread       │   │   ├─ SendConfig() [rate-limited]     │
-│                            │   │   └─ UpdateSensorTestMode()           │
+│                            │   │   ├─ UpdateSensorTestMode()           │
+│                            │   │   └─ SendPendingLightsCommands()      │
 │   Fires input callback     │   │   CorrectDeviceOrder()               │
 │   immediately on change    │   │   Fire Connected callbacks            │
 └───────────────────────────┘   └───────────────────────────────────────┘
@@ -74,6 +75,9 @@ This document traces the execution path of each public `SMX_*` API function thro
 │                  │         │                   │         │              │
 │  SMX_SetConfig() │─────────│─────────────────────────────│► queues      │
 │  acquires lock   │         │                   │         │  command     │
+│                  │         │                   │         │              │
+│  SMX_SetLights2()│─────────│─────────────────────────────│► queues      │
+│  acquires lock   │         │                   │         │  lights cmds │
 │                  │         │                   │         │              │
 │  Callback fires  │◄────────│  input change     │         │              │
 │  from USB thread │         │  callback         │         │              │
@@ -277,6 +281,54 @@ SMX_ReenableAutoLights()
    └─ For each device:
       └─ SendCommand("S 1\n")
 ```
+
+### SMX_SetLights2
+
+Sets panel LED colors for both pads (rate-limited to 30 FPS).
+
+```
+SMX_SetLights2(lightData, lightDataSize)
+│
+├─ Guard: if !g_pSMX or !lightData, return
+├─ Validate lightDataSize (must be 864 or 1350)
+├─ Split into per-pad data:
+│   ├─ 1350 bytes: lights[0] = first 675, lights[1] = second 675
+│   └─ 864 bytes:  lights[0] = first 432, lights[1] = second 432
+│
+└─ SMXManager::SetLights(lights[2])
+   ├─ Lock m_Lock
+   ├─ Skip if panel test mode is active
+   ├─ For each pad with data:
+   │   ├─ Validate size (432 or 675 bytes per pad)
+   │   ├─ Pad 16-LED data to 25-LED with zeros if needed
+   │   ├─ For each of 9 panels:
+   │   │   ├─ Outer 4×4 (16 LEDs): scale by 0.6666, split into:
+   │   │   │   ├─ Top 2 rows (8 LEDs × 3 RGB) → command '2'
+   │   │   │   └─ Bottom 2 rows (8 LEDs × 3 RGB) → command '3'
+   │   │   └─ Inner 3×3 (9 LEDs): scale by 0.6666 → command '4'
+   │   └─ Append '\n' to each command
+   │
+   ├─ Rate limiting (30 FPS):
+   │   ├─ If pending queue already has 3 commands, replace data in-place
+   │   └─ Otherwise, schedule 3 new PendingLightsCommands:
+   │       ├─ Firmware ≥ v4: all at fNow (queue immediately)
+   │       └─ Firmware < v4: cmd[1] at fSendCommandAt, cmd[2] at +1/60s
+   │
+   ├─ Per-pad command assignment:
+   │   ├─ masterVersion >= 4: fill '4' command slot
+   │   └─ masterVersion < 4: leave '4' command slot empty
+   │
+   └─ Notify condition variable (wake main thread)
+       │
+       └─ [In main I/O thread: SendPendingLightsCommands()]
+          └─ While queue not empty and fTimeToSend <= now:
+             ├─ For each pad: SendCommand(sPadCommand[iPad])
+             └─ Erase sent command from queue
+```
+
+### SMX_SetLights (deprecated)
+
+Equivalent to `SMX_SetLights2(lightData, 864)`.
 
 ### SMX_SetPlatformLights
 

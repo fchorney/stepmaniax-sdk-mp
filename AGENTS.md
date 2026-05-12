@@ -65,6 +65,7 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_helpers.cpp             # Utility function tests
 │   ├── test_helpers_manager.h       # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp      # Move semantics / pad swap regression tests
+│   ├── test_lights.cpp              # Panel LED control tests
 │   ├── test_replay.cpp              # HID traffic replay regression tests
 │   └── test_integration.cpp         # Integration tests (real hardware)
 ├── sample/sample.cpp                # Sample application

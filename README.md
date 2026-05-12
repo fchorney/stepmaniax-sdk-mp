@@ -36,13 +36,13 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
 | Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
+| Panel LED control | `SMX_SetLights2` | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
 
 ### Not yet implemented
 
 | Feature | Original API | Complexity | Description |
 |---------|-------------|------------|-------------|
-| Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
 | Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
 
@@ -336,6 +336,12 @@ void SMX_ForceRecalibration(int pad);
 // Re-enable automatic panel lighting on both pads.
 void SMX_ReenableAutoLights();
 
+// Set panel LED colors (both pads, up to 30 FPS). lightDataSize must be 1350 or 864.
+void SMX_SetLights2(const char *lightData, int lightDataSize);
+
+// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).
+void SMX_SetLights(const char lightData[864]);
+
 // Set platform edge LED strip colors (88 LEDs × 3 bytes RGB = 264 bytes, firmware v4+).
 void SMX_SetPlatformLights(const char *pLightData);
 
@@ -460,6 +466,7 @@ Panel: ┌───┬───┬───┐
 │   ├── test_helpers.cpp         # Utility function tests
 │   ├── test_helpers_manager.h   # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
+│   ├── test_lights.cpp          # Panel LED control tests
 │   ├── test_replay.cpp          # HID traffic replay regression tests
 │   └── test_integration.cpp     # Integration tests (real hardware)
 ├── sample/
