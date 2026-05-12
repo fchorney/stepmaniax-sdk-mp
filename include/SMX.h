@@ -274,6 +274,43 @@ SMX_API void SMX_ForceRecalibration(int pad);
 /// without waiting for the timeout period to elapse.
 SMX_API void SMX_ReenableAutoLights();
 
+/// Update panel LEDs on both pads. Both pads are always updated together.
+///
+/// lightData is a flat array of 8-bit RGB colors, one for each LED on each panel.
+/// lightDataSize must be either:
+///   - 1350 bytes: 2 pads × 9 panels × 25 LEDs × 3 RGB (firmware v4+ with inner 3×3 grid)
+///   - 864 bytes:  2 pads × 9 panels × 16 LEDs × 3 RGB (legacy 4×4-only layout)
+///
+/// Each panel has LEDs in the following order (25-LED mode):
+///
+///   00  01  02  03      (outer 4×4 grid, rows 0-1)
+///      16  17  18       (inner 3×3 grid, row 0)
+///   04  05  06  07      (outer 4×4 grid, rows 2-3)
+///      19  20  21       (inner 3×3 grid, row 1)
+///   08  09  10  11      (outer 4×4 grid, rows 4-5)
+///      22  23  24       (inner 3×3 grid, row 2)
+///   12  13  14  15      (outer 4×4 grid, rows 6-7)
+///
+/// Panels are ordered left-to-right, top-to-bottom for each pad:
+///   Pad 0: panels 0-8, Pad 1: panels 9-17
+///
+/// Lights update at up to 30 FPS. Faster calls replace pending data without increasing
+/// the update rate. Panels return to automatic lighting if no updates are received for
+/// a few seconds, so applications should send updates continuously.
+///
+/// A 0.6666 color scaling factor is applied to all values before sending (values above
+/// ~170 don't make LEDs brighter; this improves contrast and reduces power draw).
+///
+/// @param lightData Pointer to the RGB light data buffer.
+/// @param lightDataSize Size of the buffer in bytes (must be 1350 or 864).
+SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize);
+
+/// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).
+/// Use SMX_SetLights2 instead for 25-LED panel support.
+///
+/// @param lightData Pointer to 864 bytes of RGB data (2 pads × 9 panels × 16 LEDs × 3).
+SMX_API void SMX_SetLights(const char lightData[864]);
+
 /// Sets the platform edge LED strip colors for both pads.
 /// The input buffer contains 88 RGB triplets (264 bytes total): the first 44 LEDs
 /// (132 bytes) are for pad 0, the second 44 LEDs (132 bytes) are for pad 1.
@@ -412,6 +449,92 @@ SMX_API const char *SMX_Version();
 ///
 /// @return Elapsed time in seconds as a double (e.g., 1.234 for 1.234 seconds).
 SMX_API double SMX_GetMonotonicTime();
+
+// --- Panel Animation API ---
+
+/// Animation types for panel lighting.
+enum SMX_LightsType {
+    SMX_LightsType_Released = 0, ///< Animation while panels are released (idle)
+    SMX_LightsType_Pressed = 1,  ///< Animation while a panel is pressed
+};
+
+/// Load an animated GIF as a panel animation.
+///
+/// The GIF must be either 14×15 pixels (4×4 LED mode) or 23×24 pixels (25-LED mode),
+/// containing a 3×3 grid of panels with 1-pixel gutters between them:
+///
+///   14×15 layout (4×4 LEDs per panel):
+///     Each panel occupies a 4×4 pixel region at positions (col*5, row*5).
+///     The 1-pixel gutters between panels are ignored.
+///     Bottom row (y=14) is a flag row: if the bottom-left pixel is white,
+///     that frame marks the loop point.
+///
+///   23×24 layout (25 LEDs per panel):
+///     Each panel occupies an 8×8 pixel region at positions (col*8, row*8).
+///     The outer 4×4 grid is sampled at even coordinates (dx*2, dy*2).
+///     The inner 3×3 grid is sampled at odd coordinates (dx*2+1, dy*2+1).
+///     Bottom row (y=23) is a flag row for loop point marking.
+///
+/// @param gif Pointer to raw GIF file data.
+/// @param size Size of the GIF data in bytes.
+/// @param pad Pad index (0 or 1).
+/// @param type Which animation slot to load into (released or pressed).
+/// @param error [out] On failure, set to a static error string. Valid until next call.
+/// @return True on success, false on error (check *error for details).
+SMX_API bool SMX_LightsAnimation_Load(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+/// Enable or disable automatic panel animation playback.
+///
+/// When enabled, any animations loaded with SMX_LightsAnimation_Load will play
+/// automatically at 30 FPS. The released animation plays continuously; the pressed
+/// animation plays only while a panel is pressed and rewinds on release.
+///
+/// Animation playback is temporarily paused when SMX_SetLights2 is called directly,
+/// resuming after ~100ms of no direct lights calls.
+///
+/// @param enable True to start automatic animation, false to stop.
+SMX_API void SMX_LightsAnimation_SetAuto(bool enable);
+
+/// Callback type for upload progress reporting.
+/// @param progress Progress value from 0 to 100. 100 indicates completion.
+/// @param pUser Application context pointer passed to SMX_LightsUpload_BeginUpload.
+typedef void SMX_LightsUploadCallback(int progress, void *pUser);
+
+/// Prepare an animation upload from a GIF file.
+///
+/// This converts the GIF into the firmware's internal format (4-bit paletted packed
+/// sprites) and generates the upload command sequence. The GIF must be 23×24 pixels
+/// (25-LED mode, the only format supported for firmware upload).
+///
+/// Both animation types (released and pressed) should be prepared before calling
+/// BeginUpload. Each call to PrepareUpload appends to the upload command queue
+/// for that pad, so you can prepare both types before a single BeginUpload call.
+/// BeginUpload clears the queue after consuming it.
+///
+/// @param gif Pointer to raw GIF file data.
+/// @param size Size of the GIF data in bytes.
+/// @param pad Pad index (0 or 1).
+/// @param type Which animation slot to prepare (released or pressed).
+/// @param error [out] On failure, set to a static error string.
+/// @return True on success, false on error.
+SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+/// Begin uploading prepared animation data to the pad's firmware.
+///
+/// This queues all upload commands for the specified pad. The callback is invoked
+/// as each command completes, with progress values from 0 to 100. The callback
+/// will always be called exactly once with progress=100 when the upload finishes
+/// (even if the pad disconnects mid-upload).
+///
+/// The callback is invoked from the I/O thread. It should return quickly.
+///
+/// Both animation types should be prepared via SMX_LightsUpload_PrepareUpload
+/// before calling this function.
+///
+/// @param pad Pad index (0 or 1).
+/// @param callback Progress callback function.
+/// @param pUser Application context pointer passed to the callback.
+SMX_API void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, void *pUser);
 
 /// Information about a connected SMX device.
 /// This structure holds the current connection state and device metadata.

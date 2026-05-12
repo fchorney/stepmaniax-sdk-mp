@@ -32,7 +32,8 @@ This document traces the execution path of each public `SMX_*` API function thro
 │   │  m_iInputState update  │   │   ├─ CheckWrites() [send commands]   │
 │   └─ Report 6 → buffer     │   │   ├─ HandlePackets() [config/data]   │
 │      for main thread       │   │   ├─ SendConfig() [rate-limited]     │
-│                            │   │   └─ UpdateSensorTestMode()           │
+│                            │   │   ├─ UpdateSensorTestMode()           │
+│                            │   │   └─ SendPendingLightsCommands()      │
 │   Fires input callback     │   │   CorrectDeviceOrder()               │
 │   immediately on change    │   │   Fire Connected callbacks            │
 └───────────────────────────┘   └───────────────────────────────────────┘
@@ -74,6 +75,9 @@ This document traces the execution path of each public `SMX_*` API function thro
 │                  │         │                   │         │              │
 │  SMX_SetConfig() │─────────│─────────────────────────────│► queues      │
 │  acquires lock   │         │                   │         │  command     │
+│                  │         │                   │         │              │
+│  SMX_SetLights2()│─────────│─────────────────────────────│► queues      │
+│  acquires lock   │         │                   │         │  lights cmds │
 │                  │         │                   │         │              │
 │  Callback fires  │◄────────│  input change     │         │              │
 │  from USB thread │         │  callback         │         │              │
@@ -278,6 +282,54 @@ SMX_ReenableAutoLights()
       └─ SendCommand("S 1\n")
 ```
 
+### SMX_SetLights2
+
+Sets panel LED colors for both pads (rate-limited to 30 FPS).
+
+```
+SMX_SetLights2(lightData, lightDataSize)
+│
+├─ Guard: if !g_pSMX or !lightData, return
+├─ Validate lightDataSize (must be 864 or 1350)
+├─ Split into per-pad data:
+│   ├─ 1350 bytes: lights[0] = first 675, lights[1] = second 675
+│   └─ 864 bytes:  lights[0] = first 432, lights[1] = second 432
+│
+└─ SMXManager::SetLights(lights[2])
+   ├─ Lock m_Lock
+   ├─ Skip if panel test mode is active
+   ├─ For each pad with data:
+   │   ├─ Validate size (432 or 675 bytes per pad)
+   │   ├─ Pad 16-LED data to 25-LED with zeros if needed
+   │   ├─ For each of 9 panels:
+   │   │   ├─ Outer 4×4 (16 LEDs): scale by 0.6666, split into:
+   │   │   │   ├─ Top 2 rows (8 LEDs × 3 RGB) → command '2'
+   │   │   │   └─ Bottom 2 rows (8 LEDs × 3 RGB) → command '3'
+   │   │   └─ Inner 3×3 (9 LEDs): scale by 0.6666 → command '4'
+   │   └─ Append '\n' to each command
+   │
+   ├─ Rate limiting (30 FPS):
+   │   ├─ If pending queue already has 3 commands, replace data in-place
+   │   └─ Otherwise, schedule 3 new PendingLightsCommands:
+   │       ├─ Firmware ≥ v4: all at fNow (queue immediately)
+   │       └─ Firmware < v4: cmd[1] at fSendCommandAt, cmd[2] at +1/60s
+   │
+   ├─ Per-pad command assignment:
+   │   ├─ masterVersion >= 4: fill '4' command slot
+   │   └─ masterVersion < 4: leave '4' command slot empty
+   │
+   └─ Notify condition variable (wake main thread)
+       │
+       └─ [In main I/O thread: SendPendingLightsCommands()]
+          └─ While queue not empty and fTimeToSend <= now:
+             ├─ For each pad: SendCommand(sPadCommand[iPad])
+             └─ Erase sent command from queue
+```
+
+### SMX_SetLights (deprecated)
+
+Equivalent to `SMX_SetLights2(lightData, 864)`.
+
 ### SMX_SetPlatformLights
 
 Sets platform edge LED strip colors (88 LEDs × RGB = 264 bytes total).
@@ -402,6 +454,94 @@ Simple getters with no I/O.
 ```
 SMX_Version()        → returns SMX_VERSION string constant
 SMX_GetMonotonicTime() → returns chrono::steady_clock elapsed seconds since first call
+```
+
+### SMX_LightsAnimation_Load
+
+Loads a GIF as a panel animation for one pad and animation type.
+
+```
+SMX_LightsAnimation_Load(gif, size, pad, type, error)
+│
+├─ Validate inputs (null check, pad range, type enum)
+├─ Decode GIF via gif_load (GIF_Load callback composites frames with disposal)
+├─ Validate dimensions (must be 14×15 or 23×24)
+├─ For each frame:
+│   ├─ Check loop frame marker (bottom-left pixel white → set loopFrame)
+│   ├─ Store frame duration (snap 30ms/40ms to 1/30s)
+│   └─ For each of 9 panels:
+│       └─ ExtractPanel():
+│           ├─ 14×15: sample 4×4 grid at (col*5, row*5) → 16 LEDs
+│           └─ 23×24: sample outer 4×4 at even coords + inner 3×3 at odd → 25 LEDs
+├─ Lock g_AnimMutex
+├─ Store PanelAnimationData in g_Animations[pad][type]
+└─ Reset playback state for all 9 panels
+```
+
+### SMX_LightsAnimation_SetAuto
+
+Starts or stops the animation playback thread.
+
+```
+SMX_LightsAnimation_SetAuto(enable)
+│
+├─ enable=true:
+│   ├─ If already running, return
+│   └─ Spawn AnimationThreadMain():
+│       └─ Loop at 30 FPS until shutdown:
+│           ├─ Check g_fStopAnimatingUntil (pause if SMX_SetLights2 called directly)
+│           ├─ Lock g_AnimMutex
+│           ├─ For each pad:
+│           │   ├─ Get input state (for pressed animation)
+│           │   ├─ For each panel:
+│           │   │   ├─ Render released animation frame → output buffer
+│           │   │   └─ If pressed: overlay pressed animation frame
+│           │   └─ Advance frame timing (timeInFrame += 1/30, wrap at loopFrame)
+│           ├─ Unlock
+│           ├─ Call SMX_SetLights2() (with g_bAnimThreadSending flag to skip self-pause)
+│           └─ Sleep remainder of 33ms frame
+│
+└─ enable=false:
+    ├─ Set g_bAnimShutdown = true
+    └─ Join animation thread
+```
+
+### SMX_LightsUpload_PrepareUpload
+
+Converts a GIF into firmware upload commands.
+
+```
+SMX_LightsUpload_PrepareUpload(gif, size, pad, type, error)
+│
+├─ Validate inputs, decode GIF, check dimensions (must be 23×24)
+├─ Check frame count (max 32)
+├─ Extract per-panel frames + detect loop frame marker
+├─ For each of 9 panels:
+│   ├─ BuildPalette(): extract up to 15 unique colors (black = transparent)
+│   ├─ PackGraphic(): pack each frame into 13-byte 4-bit nibble format
+│   └─ Apply 0.6666 color scaling to palette
+├─ Build master timing: frame indices + 30FPS delay counts + loop frame
+├─ Generate upload command sequence:
+│   ├─ CreateUploadPackets() for each panel's graphics + palette
+│   ├─ Interleave across panels (one packet per panel per burst)
+│   ├─ Insert delay commands (max_size × 3.4ms) between bursts
+│   ├─ Duplicate panel data for reliability
+│   └─ Append master timing packets (final_packet=1 on last)
+└─ Append command list to g_UploadCommands[pad]
+```
+
+### SMX_LightsUpload_BeginUpload
+
+Queues all prepared upload commands for transmission.
+
+```
+SMX_LightsUpload_BeginUpload(pad, callback, pUser)
+│
+├─ If no commands prepared: callback(100), return
+├─ Create shared atomic counter for progress tracking
+└─ For each command in g_UploadCommands[pad]:
+    └─ SMX_SendCommandForPad(pad, cmd, completion_callback)
+        └─ On completion: increment counter, report progress (0-99, then 100 on last)
 ```
 
 ## Device Connection Lifecycle

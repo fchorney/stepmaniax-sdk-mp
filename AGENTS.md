@@ -4,7 +4,7 @@
 
 This is a cross-platform SDK for StepManiaX dance pads, based on the [original StepManiaX SDK](https://github.com/steprevolution/stepmaniax-sdk). The original SDK is included as a git submodule at `original_sdk/` for reference.
 
-The goal is to eventually implement all features from the original SDK, but with a fundamentally different architecture optimized for input latency. Input processing (Report 3 packets) is the highest priority — it must be as fast and low-latency as possible. Report 6 data (commands, config, device info) must still be processed correctly but is secondary to input responsiveness.
+The goal is to eventually implement all features from the original SDK, but with a fundamentally different architecture optimized for input latency. All features from the original SDK have been implemented. Input processing (Report 3 packets) is the highest priority — it must be as fast and low-latency as possible. Report 6 data (commands, config, device info) must still be processed correctly but is secondary to input responsiveness.
 
 ## Architecture
 
@@ -38,8 +38,9 @@ Key design decisions:
 - **CMake** 3.14+
 - **C++14** compiler
 - **hidapi** — the only external library dependency
+- **gif_load** — single-header animated GIF decoder (vendored in `src/vendor/`, public domain)
 
-New dependencies should not be added unless there is a compelling reason. The SDK should remain minimal and easy to build on all platforms.
+New dependencies should not be added unless there is a compelling reason. The SDK should remain minimal and easy to build on all platforms. Prefer vendored single-header libraries over external dependencies when the functionality is small and self-contained.
 
 ## Project structure
 
@@ -55,7 +56,10 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── SMXHIDRecorder.cpp           # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h            # Internal config struct
 │   ├── SMXConfigPacket.cpp          # Old firmware config format conversion
-│   └── SMXVersion.h.in              # Version header template (configured by CMake)
+│   ├── SMXPanelAnimation.cpp        # GIF animation loading and playback
+│   ├── SMXVersion.h.in              # Version header template (configured by CMake)
+│   └── vendor/
+│       └── gif_load.h              # Single-header GIF decoder (public domain)
 ├── tests/
 │   ├── test_main.cpp                # Version and log callback tests
 │   ├── test_device_connection.cpp   # Device connection tests with fake HID
@@ -65,6 +69,8 @@ New dependencies should not be added unless there is a compelling reason. The SD
 │   ├── test_helpers.cpp             # Utility function tests
 │   ├── test_helpers_manager.h       # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp      # Move semantics / pad swap regression tests
+│   ├── test_lights.cpp              # Panel LED control tests
+│   ├── test_panel_animation.cpp     # GIF animation loading tests
 │   ├── test_replay.cpp              # HID traffic replay regression tests
 │   └── test_integration.cpp         # Integration tests (real hardware)
 ├── sample/sample.cpp                # Sample application

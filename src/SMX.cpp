@@ -724,7 +724,11 @@ public:
         auto thisId = this_thread::get_id();
         if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
         {
-            Log("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting.");
+            Log(ssprintf("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting. "
+                         "(caller=%s, main=%s, usb=%s)",
+                         thisId == m_MainThreadId ? "MainThread" : "USBThread",
+                         m_MainThreadId == thread::id() ? "unset" : "set",
+                         m_USBPollingThreadId == thread::id() ? "unset" : "set"));
             abort();
         }
 
@@ -800,6 +804,165 @@ public:
             sCmd.push_back(44);  // number of LEDs
             sCmd.append(pLightData + iPad * 44 * 3, 44 * 3);
             m_Devices[iPad].SendCommand(sCmd);
+        }
+    }
+
+    /// Sets panel LED colors for both pads. Called from SMX_SetLights2.
+    /// Splits the input data into per-pad commands, applies color scaling,
+    /// and queues them for rate-limited dispatch on the main thread.
+    void SetLights(const string sPanelLights[2])
+    {
+        lock_guard<recursive_mutex> lock(m_Lock);
+
+        // Don't send lights when a panel test mode is active.
+        if(m_PanelTestMode != PanelTestMode_Off)
+            return;
+
+        // Build the 3 commands per pad: '4' (inner 3x3), '2' (top half), '3' (bottom half).
+        string sLightCommands[3][2]; // [command_index][pad]
+
+        for(int iPad = 0; iPad < 2; ++iPad)
+        {
+            string sData = sPanelLights[iPad];
+            if(sData.empty())
+                continue;
+
+            const int LightSize16 = 9*16*3;
+            const int LightSize25 = 9*25*3;
+            if(sData.size() != LightSize16 && sData.size() != LightSize25)
+            {
+                Log(ssprintf("SetLights: expected %i or %i bytes, got %i",
+                    LightSize16, LightSize25, (int)sData.size()));
+                continue;
+            }
+
+            // Pad 16-LED data to 25-LED with zeros.
+            if(sData.size() == LightSize16)
+                sData.append(LightSize25 - LightSize16, '\0');
+
+            sLightCommands[0][iPad] = "4";
+            sLightCommands[1][iPad] = "2";
+            sLightCommands[2][iPad] = "3";
+
+            int iNextInputByte = 0;
+            for(int iPanel = 0; iPanel < 9; ++iPanel)
+            {
+                // Outer 4x4 grid: top 2 rows → command '2', bottom 2 rows → command '3'.
+                for(int iByte = 0; iByte < 4*4*3; ++iByte)
+                {
+                    uint8_t iColor = uint8_t(sData[iNextInputByte++]);
+                    iColor = uint8_t(iColor * 0.6666f);
+                    int iCmd = iByte < 4*2*3 ? 1 : 2;
+                    sLightCommands[iCmd][iPad].push_back(iColor);
+                }
+                // Inner 3x3 grid → command '4'.
+                for(int iByte = 0; iByte < 3*3*3; ++iByte)
+                {
+                    uint8_t iColor = uint8_t(sData[iNextInputByte++]);
+                    iColor = uint8_t(iColor * 0.6666f);
+                    sLightCommands[0][iPad].push_back(iColor);
+                }
+            }
+
+            sLightCommands[0][iPad].push_back('\n');
+            sLightCommands[1][iPad].push_back('\n');
+            sLightCommands[2][iPad].push_back('\n');
+        }
+
+        // Rate limiting: if we already have a full set of 3 pending commands,
+        // replace them with the new data rather than adding more.
+        if(m_aPendingLightsCommands.size() < 3)
+        {
+            // Determine timing based on firmware version.
+            // NOTE: If two pads are connected with different firmware versions (one <v4,
+            // one >=v4), we use a single timing strategy based on whichever is higher.
+            // The original SDK has the same limitation. In practice, mismatched firmware
+            // across pads is extremely rare. The worst case (v4 timing on a v3 pad) means
+            // the v3 master may briefly block while its TX queue fills, but still works.
+            double fNow = GetMonotonicTime();
+            double fSendCommandAt = max(fNow, m_fDelayLightCommandsUntil);
+            double fCommandTimes[3] = { fNow, fNow, fNow };
+
+            bool bMasterIsV4 = false;
+            bool bAnyConnected = false;
+            for(int iPad = 0; iPad < 2; ++iPad)
+            {
+                SMXConfig config;
+                if(!m_Devices[iPad].GetConfig(config))
+                    continue;
+                bAnyConnected = true;
+                if(config.masterVersion >= 4)
+                    bMasterIsV4 = true;
+            }
+
+            // Don't queue lights if no device has config yet.
+            if(!bAnyConnected)
+                return;
+
+            // Firmware < 4: delay between commands to give the master time to relay.
+            // Firmware >= 4: queue all at once, firmware handles flow control.
+            if(!bMasterIsV4)
+            {
+                const double fDelayBetweenCommands = 1.0/60.0;
+                fCommandTimes[1] = fSendCommandAt;
+                fCommandTimes[2] = fCommandTimes[1] + fDelayBetweenCommands;
+            }
+
+            m_fDelayLightCommandsUntil = fSendCommandAt + 1.0/30.0;
+
+            m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[0], {"", ""}});
+            m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[1], {"", ""}});
+            m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[2], {"", ""}});
+        }
+
+        // Fill in (or replace) the last 3 pending commands with the new data.
+        for(int iPad = 0; iPad < 2; ++iPad)
+        {
+            if(sLightCommands[0][iPad].empty())
+                continue;
+
+            SMXConfig config;
+            if(!m_Devices[iPad].GetConfig(config))
+                continue;
+
+            size_t iBase = m_aPendingLightsCommands.size() - 3;
+
+            // Command '4' (inner grid) is only sent on firmware v4+.
+            if(config.masterVersion >= 4)
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = sLightCommands[0][iPad];
+            else
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = "";
+
+            m_aPendingLightsCommands[iBase + 1].sPadCommand[iPad] = sLightCommands[1][iPad];
+            m_aPendingLightsCommands[iBase + 2].sPadCommand[iPad] = sLightCommands[2][iPad];
+        }
+
+        // Wake the main thread to send the commands.
+        m_Cond.notify_all();
+    }
+
+    /// Dispatches pending lights commands that are due. Called from the main thread loop.
+    void SendPendingLightsCommands()
+    {
+        while(!m_aPendingLightsCommands.empty())
+        {
+            const PendingLightsCommand &cmd = m_aPendingLightsCommands[0];
+            if(cmd.fTimeToSend > GetMonotonicTime())
+                break;
+
+            for(int iPad = 0; iPad < 2; ++iPad)
+            {
+                if(!cmd.sPadCommand[iPad].empty())
+                {
+                    m_iLightsCommandsInProgress++;
+                    m_Devices[iPad].SendCommand(cmd.sPadCommand[iPad], [this](string) {
+                        lock_guard<recursive_mutex> lock(m_Lock);
+                        m_iLightsCommandsInProgress--;
+                    });
+                }
+            }
+
+            m_aPendingLightsCommands.erase(m_aPendingLightsCommands.begin());
         }
     }
 
@@ -908,9 +1071,21 @@ private:
             }
 
             UpdatePanelTestMode();
+            SendPendingLightsCommands();
+
+            // Determine wait time: if lights commands are pending, wake up when the
+            // next one is due. Otherwise use the normal main thread sleep interval.
+            int iWaitMs = m_iMainThreadSleepMs.load(memory_order_relaxed);
+            if(!m_aPendingLightsCommands.empty())
+            {
+                double fSendIn = m_aPendingLightsCommands[0].fTimeToSend - GetMonotonicTime();
+                int iLightsMs = int(fSendIn * 1000) + 1;
+                if(iLightsMs < 0) iLightsMs = 0;
+                iWaitMs = min(iWaitMs, iLightsMs);
+            }
 
             // Wait for Report 6 data from USB polling thread, or timeout.
-            m_Cond.wait_for(m_Lock, chrono::milliseconds(m_iMainThreadSleepMs.load(memory_order_relaxed)));
+            m_Cond.wait_for(m_Lock, chrono::milliseconds(iWaitMs));
         }
         m_Lock.unlock();
     }
@@ -923,9 +1098,19 @@ private:
            (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < 1.0))
             return;
 
-        // TODO: When transitioning from Off to active (m_LastSentPanelTestMode == PanelTestMode_Off),
-        // send a lights-off command ("l" + 108 zero bytes + "\n") to clear panels before entering
-        // test mode. This matches the original SDK behavior. Requires lighting commands to be implemented first.
+        // When transitioning from Off to active, send a lights-off command to clear
+        // panels before entering test mode. This matches the original SDK behavior.
+        // The 'l' command is a legacy lights command (predates the '2'/'3'/'4' split).
+        // The 108 zero bytes (9 panels × 4 LEDs × 3 RGB) is the minimum payload the
+        // firmware expects for this command. It's only used to blank panels now.
+        if(m_LastSentPanelTestMode == PanelTestMode_Off && m_PanelTestMode != PanelTestMode_Off)
+        {
+            string sCmd = "l";
+            sCmd.append(108, '\0');
+            sCmd.push_back('\n');
+            for(auto & m_Device : m_Devices)
+                m_Device.SendCommand(sCmd);
+        }
 
         m_fLastPanelTestModeSentAt = GetMonotonicTime();
         m_LastSentPanelTestMode = m_PanelTestMode;
@@ -1017,6 +1202,12 @@ private:
         return bSwap;
     }
 
+    /// A single lights command to be sent to both pads at a scheduled time.
+    struct PendingLightsCommand {
+        double fTimeToSend = 0;
+        string sPadCommand[2]; // Command string for each pad (empty = skip)
+    };
+
     recursive_mutex m_Lock;
     thread m_Thread;
     thread m_USBPollingThread;
@@ -1033,6 +1224,11 @@ private:
     PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
     double m_fLastPanelTestModeSentAt = 0;
     double m_fLastEnumerationTime = 0;
+
+    // Lights command queue and rate limiting state.
+    vector<PendingLightsCommand> m_aPendingLightsCommands;
+    double m_fDelayLightCommandsUntil = 0;
+    int m_iLightsCommandsInProgress = 0;
 };
 
 // File-static singleton. No global variable visible outside this file.
@@ -1078,6 +1274,9 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 /// IMPORTANT: This must not be called from within an update callback.
 SMX_API void SMX_Stop()
 {
+    // Stop the animation thread before destroying the manager, since the
+    // animation thread calls SMX_SetLights2 which uses the manager.
+    SMX_LightsAnimation_SetAuto(false);
     g_pSMX.reset();
 }
 
@@ -1169,6 +1368,46 @@ SMX_API void SMX_ReenableAutoLights()
     if(g_pSMX) g_pSMX->ReenableAutoLights();
 }
 
+// Declared in SMXPanelAnimation.cpp
+void SMXLightsAnimation_TemporaryStop();
+
+/// Sets panel LED colors for both pads.
+SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
+{
+    if(!g_pSMX || !lightData) return;
+
+    string lights[2];
+    const int BytesPerPad16 = 9*16*3;
+    const int BytesPerPad25 = 9*25*3;
+    if(lightDataSize == 2*BytesPerPad16)
+    {
+        lights[0] = string(lightData, BytesPerPad16);
+        lights[1] = string(lightData + BytesPerPad16, BytesPerPad16);
+    }
+    else if(lightDataSize == 2*BytesPerPad25)
+    {
+        lights[0] = string(lightData, BytesPerPad25);
+        lights[1] = string(lightData + BytesPerPad25, BytesPerPad25);
+    }
+    else
+    {
+        Log(ssprintf("SMX_SetLights2: lightDataSize must be %i or %i, got %i",
+            2*BytesPerPad16, 2*BytesPerPad25, lightDataSize));
+        return;
+    }
+
+    g_pSMX->SetLights(lights);
+
+    // Pause auto-animation briefly so it doesn't compete with direct lights control.
+    SMXLightsAnimation_TemporaryStop();
+}
+
+/// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).
+SMX_API void SMX_SetLights(const char lightData[864])
+{
+    SMX_SetLights2(lightData, 864);
+}
+
 /// Sets the platform edge LED strip colors for both pads.
 SMX_API void SMX_SetPlatformLights(const char *pLightData)
 {
@@ -1230,6 +1469,15 @@ SMX_API double SMX_GetMonotonicTime()
 // ---------------------------------------------------------------------------
 // Test-only API (not exported from shared library, linked directly in tests)
 // ---------------------------------------------------------------------------
+
+/// Sends a command to a specific pad. Used by SMXPanelAnimation.cpp for upload.
+void SMX_SendCommandForPad(int pad, const std::string &cmd, std::function<void(std::string)> pComplete)
+{
+    if(!g_pSMX) { if(pComplete) pComplete(""); return; }
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) { if(pComplete) pComplete(""); return; }
+    dev->SendCommand(cmd, pComplete);
+}
 
 /// Starts the SDK with a custom HID enumerator for testing.
 /// This allows tests to inject fake devices without real hardware.

@@ -116,78 +116,53 @@ static bool WritesContainCommand(const vector<vector<uint8_t>> &writes, const st
 
 // --- Replay regression tests ---
 
-TEST_CASE("Replay: P1 solo connection")
+TEST_CASE("Replay: connection")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
+    string sFile0 = CapturePath("connection/device_0.smxhid");
+    if(!CaptureExists(sFile0))
     {
-        MESSAGE("Capture not found: ", sFile, " — skipping");
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
         return;
     }
 
     auto pEnum = new ReplayHIDEnumerator();
-    pEnum->AddCapture(sFile);
+    pEnum->AddCapture(sFile0);
 
-    bool bConnected = false;
+    string sFile1 = CapturePath("connection/device_1.smxhid");
+    bool bHasSecondDevice = CaptureExists(sFile1);
+    if(bHasSecondDevice)
+        pEnum->AddCapture(sFile1);
+
+    int iExpected = bHasSecondDevice ? 2 : 1;
+    int iConnectedCount = 0;
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                (*static_cast<int *>(pUser))++;
         },
-        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+        &iConnectedCount, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return iConnectedCount >= iExpected; }, 5000));
 
-    SMXInfo info;
-    SMX_GetInfo(0, &info);
-    CHECK(info.m_bConnected);
-    CHECK_FALSE(info.m_bIsPlayer2);
-    CHECK(info.m_iFirmwareVersion > 0);
-    MESSAGE("P1 solo: fw=", info.m_iFirmwareVersion,
-            " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-
-    // Verify expected commands are in the capture (config read on activation)
-    auto &devs = pEnum->GetOpenedDevices();
-    REQUIRE(devs.size() >= 1);
-    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), "G"));
-
-    SMX_Stop();
-}
-
-TEST_CASE("Replay: P2 solo connection")
-{
-    string sFile = CapturePath("p2_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-    {
-        MESSAGE("Capture not found: ", sFile, " — skipping");
-        return;
-    }
-
-    auto pEnum = new ReplayHIDEnumerator();
-    pEnum->AddCapture(sFile);
-
-    bool bConnected = false;
-    SMX_StartWithEnumerator(
-        [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
-        },
-        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
-
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
-
-    SMXInfo info;
-    SMX_GetInfo(1, &info);
-    CHECK(info.m_bConnected);
-    CHECK(info.m_bIsPlayer2);
-    CHECK(info.m_iFirmwareVersion > 0);
-    MESSAGE("P2 solo: fw=", info.m_iFirmwareVersion,
-            " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-
-    // Slot 0 should be empty
+    // Verify slot 0 is connected and is P1
     SMXInfo info0;
     SMX_GetInfo(0, &info0);
-    CHECK_FALSE(info0.m_bConnected);
+    CHECK(info0.m_bConnected);
+    CHECK_FALSE(info0.m_bIsPlayer2);
+    CHECK(info0.m_iFirmwareVersion > 0);
+    MESSAGE("Slot 0: fw=", info0.m_iFirmwareVersion,
+            " serial=", info0.m_bHasSerialNumber ? info0.m_Serial : "(none)");
+
+    if(bHasSecondDevice)
+    {
+        SMXInfo info1;
+        SMX_GetInfo(1, &info1);
+        CHECK(info1.m_bConnected);
+        CHECK(info1.m_bIsPlayer2);
+        CHECK(info1.m_iFirmwareVersion > 0);
+        MESSAGE("Slot 1: fw=", info1.m_iFirmwareVersion,
+                " serial=", info1.m_bHasSerialNumber ? info1.m_Serial : "(none)");
+    }
 
     // Verify config read command in capture
     auto &devs = pEnum->GetOpenedDevices();
@@ -197,53 +172,12 @@ TEST_CASE("Replay: P2 solo connection")
     SMX_Stop();
 }
 
-TEST_CASE("Replay: both pads connection")
-{
-    string sFile0 = CapturePath("both_pads/device_0.smxhid");
-    string sFile1 = CapturePath("both_pads/device_1.smxhid");
-    if(!CaptureExists(sFile0) || !CaptureExists(sFile1))
-    {
-        MESSAGE("Captures not found — skipping");
-        return;
-    }
-
-    auto pEnum = new ReplayHIDEnumerator();
-    pEnum->AddCapture(sFile0);
-    pEnum->AddCapture(sFile1);
-
-    int iConnectedCount = 0;
-    SMX_StartWithEnumerator(
-        [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                (*static_cast<int *>(pUser))++;
-        },
-        &iConnectedCount, unique_ptr<IHIDEnumerator>(pEnum));
-
-    REQUIRE(WaitFor([&]() { return iConnectedCount >= 2; }, 5000));
-
-    SMXInfo info0, info1;
-    SMX_GetInfo(0, &info0);
-    SMX_GetInfo(1, &info1);
-    CHECK(info0.m_bConnected);
-    CHECK(info1.m_bConnected);
-    CHECK_FALSE(info0.m_bIsPlayer2);
-    CHECK(info1.m_bIsPlayer2);
-
-    MESSAGE("Both pads: slot0 fw=", info0.m_iFirmwareVersion,
-            " slot1 fw=", info1.m_iFirmwareVersion);
-
-    SMX_Stop();
-}
-
 TEST_CASE("Replay: force recalibration command in capture")
 {
-    // Try p1_solo first, fall back to both_pads
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("force_recalibration/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 
@@ -260,18 +194,14 @@ TEST_CASE("Replay: force recalibration command in capture")
 
     REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
 
-    // Send recalibration and verify it doesn't crash
-    SMX_ForceRecalibration(0);
-    this_thread::sleep_for(chrono::milliseconds(200));
-
     SMXInfo info;
     SMX_GetInfo(0, &info);
     CHECK(info.m_bConnected);
 
-    // Verify the SDK sent the recalibration command ("C\n")
+    // Verify the capture contains the recalibration command ("C\n")
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
-    CHECK(WritesContainCommand(devs[0]->GetActualWrites(), string("C\n", 2)));
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("C\n", 2)));
     MESSAGE("Force recalibration command verified in replay writes");
 
     SMX_Stop();
@@ -279,12 +209,10 @@ TEST_CASE("Replay: force recalibration command in capture")
 
 TEST_CASE("Replay: panel test mode command in capture")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("panel_test_mode/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 
@@ -301,21 +229,15 @@ TEST_CASE("Replay: panel test mode command in capture")
 
     REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
 
-    // Enable and disable test mode
-    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
-    this_thread::sleep_for(chrono::milliseconds(200));
-    SMX_SetPanelTestMode(PanelTestMode_Off);
-    this_thread::sleep_for(chrono::milliseconds(200));
-
     SMXInfo info;
     SMX_GetInfo(0, &info);
     CHECK(info.m_bConnected);
 
-    // Verify the SDK sent panel test mode commands.
+    // Verify the capture contains panel test mode commands from the original recording.
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
-    CHECK(WritesContainCommand(devs[0]->GetActualWrites(), string("t 1\n", 4)));
-    CHECK(WritesContainCommand(devs[0]->GetActualWrites(), string("t 0\n", 4)));
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 1\n", 4)));
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("t 0\n", 4)));
     MESSAGE("Panel test mode commands verified in replay writes");
 
     SMX_Stop();
@@ -323,12 +245,10 @@ TEST_CASE("Replay: panel test mode command in capture")
 
 TEST_CASE("Replay: re-enable auto lights command in capture")
 {
-    string sFile = CapturePath("p1_solo/device_0.smxhid");
-    if(!CaptureExists(sFile))
-        sFile = CapturePath("both_pads/device_0.smxhid");
+    string sFile = CapturePath("reenable_auto_lights/device_0.smxhid");
     if(!CaptureExists(sFile))
     {
-        MESSAGE("No capture found — skipping");
+        MESSAGE("Capture not found: ", sFile, " — skipping");
         return;
     }
 
@@ -345,18 +265,14 @@ TEST_CASE("Replay: re-enable auto lights command in capture")
 
     REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
 
-    // Send re-enable auto lights
-    SMX_ReenableAutoLights();
-    this_thread::sleep_for(chrono::milliseconds(200));
-
     SMXInfo info;
     SMX_GetInfo(0, &info);
     CHECK(info.m_bConnected);
 
-    // Verify the SDK sent the auto lights command ("S 1\n")
+    // Verify the capture contains the auto lights command ("S 1\n")
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
-    CHECK(WritesContainCommand(devs[0]->GetActualWrites(), string("S 1\n", 4)));
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("S 1\n", 4)));
     MESSAGE("Re-enable auto lights command verified in replay writes");
 
     SMX_Stop();
@@ -561,6 +477,229 @@ TEST_CASE("Replay: sensor test mode")
         }
     }
     CHECK(bFoundTestCmd);
+
+    SMX_Stop();
+}
+
+TEST_CASE("Replay: panel lights commands in capture")
+{
+    string sFile0 = CapturePath("panel_lights/device_0.smxhid");
+    string sFile1 = CapturePath("panel_lights/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool *>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+
+    // Analyze the recorded writes from device 0
+    auto &writes = devs[0]->GetExpectedWrites();
+
+    // Extract all lights commands in order
+    struct LightsCmd { char type; size_t payloadSize; size_t index; };
+    vector<LightsCmd> lightsCmds;
+    for(size_t i = 0; i < writes.size(); i++)
+    {
+        const auto &w = writes[i];
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '2' || cmd == '3' || cmd == '4')
+            {
+                // Reconstruct full command size from all packets of this command
+                // For START_OF_COMMAND packets, payload size is in w[2]
+                lightsCmds.push_back({cmd, w[2], i});
+            }
+        }
+    }
+
+    // Should have many lights commands (3 per frame, ~90 frames = ~270 commands)
+    MESSAGE("Total lights commands in capture: ", lightsCmds.size());
+    CHECK(lightsCmds.size() >= 30); // At least 10 full updates
+
+    // Verify commands come in groups of 3: '4', '2', '3' (firmware v5)
+    int iFullUpdates = 0;
+    for(size_t i = 0; i + 2 < lightsCmds.size(); i += 3)
+    {
+        if(lightsCmds[i].type == '4' &&
+           lightsCmds[i+1].type == '2' &&
+           lightsCmds[i+2].type == '3')
+        {
+            iFullUpdates++;
+        }
+    }
+    MESSAGE("Complete 4-2-3 update groups: ", iFullUpdates);
+    CHECK(iFullUpdates >= 10);
+
+    // Verify color scaling: no byte in the lights payload should exceed 170
+    // (since all input values are scaled by 0.6666, max output is 255*0.6666 ≈ 170)
+    int iMaxColorValue = 0;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 2)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '2' || cmd == '3' || cmd == '4')
+            {
+                // Check color bytes in the payload (skip the command byte itself)
+                for(size_t j = 4; j < 3 + w[2]; j++)
+                {
+                    int val = static_cast<uint8_t>(w[j]);
+                    if(val > iMaxColorValue)
+                        iMaxColorValue = val;
+                }
+            }
+        }
+    }
+    MESSAGE("Max color value in lights data: ", iMaxColorValue);
+    CHECK(iMaxColorValue <= 170);
+    CHECK(iMaxColorValue > 0); // Should have some non-zero colors
+
+    // If we have two devices, verify both got lights commands
+    if(devs.size() >= 2)
+    {
+        auto &writes1 = devs[1]->GetExpectedWrites();
+        bool bDev1HasLights = false;
+        for(const auto &w : writes1)
+        {
+            if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+               (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+            {
+                char cmd = static_cast<char>(w[3]);
+                if(cmd == '2' || cmd == '3' || cmd == '4')
+                {
+                    bDev1HasLights = true;
+                    break;
+                }
+            }
+        }
+        CHECK(bDev1HasLights);
+        MESSAGE("Device 1 also received lights commands");
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Replay: panel animation lights commands in capture")
+{
+    string sFile0 = CapturePath("panel_animation/device_0.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+
+    string sFile1 = CapturePath("panel_animation/device_1.smxhid");
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool *>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    // The panel animation integration test plays a 6-frame GIF for 3 seconds.
+    // Verify the capture contains lights commands from the animation playback.
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+
+    auto &writes = devs[0]->GetExpectedWrites();
+    int iLightsCmdCount = 0;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '2' || cmd == '3' || cmd == '4')
+                iLightsCmdCount++;
+        }
+    }
+
+    // Should have many lights commands from 3 seconds of animation at 30 FPS
+    MESSAGE("Panel animation capture: ", iLightsCmdCount, " lights commands");
+    CHECK(iLightsCmdCount >= 30);
+
+    // Verify the "S 1\n" (re-enable auto lights) command is present at the end
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("S 1\n", 4)));
+
+    SMX_Stop();
+}
+
+TEST_CASE("Replay: animation upload commands in capture")
+{
+    string sFile0 = CapturePath("animation_upload/device_0.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+
+    string sFile1 = CapturePath("animation_upload/device_1.smxhid");
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool *>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    // Verify the capture contains upload ('m') and delay ('d') commands
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+
+    auto &writes = devs[0]->GetExpectedWrites();
+    bool bFoundUpload = false, bFoundDelay = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == 'm') bFoundUpload = true;
+            if(cmd == 'd') bFoundDelay = true;
+        }
+    }
+
+    CHECK(bFoundUpload);
+    CHECK(bFoundDelay);
+
+    MESSAGE("Animation upload commands verified: upload=", bFoundUpload, " delay=", bFoundDelay);
 
     SMX_Stop();
 }

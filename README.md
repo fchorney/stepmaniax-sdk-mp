@@ -36,15 +36,14 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write pad thresholds, lighting config, sensor settings |
 | Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
+| Panel LED control | `SMX_SetLights2` | Set RGB colors for all panel LEDs (up to 30 FPS) |
+| GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | Load and auto-play GIF animations on panels |
+| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | Upload animations to firmware EEPROM for offline playback |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
 
 ### Not yet implemented
 
-| Feature | Original API | Complexity | Description |
-|---------|-------------|------------|-------------|
-| Panel LED control | `SMX_SetLights2` | High | Set RGB colors for all panel LEDs (up to 30 FPS) |
-| GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | High | Load and auto-play GIF animations on panels |
-| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
+All features from the original SDK have been implemented.
 
 ## Threading architecture
 
@@ -69,6 +68,21 @@ This suggests the pad only sends input reports when the panel state changes or o
 - **CMake** 3.14+
 - **C++14** compiler
 - **[hidapi](https://github.com/libusb/hidapi)** — lightweight HID library
+- **[gif_load](https://github.com/hidefromkgb/gif_load)** — single-header animated GIF decoder (vendored, public domain)
+
+### Vendored libraries
+
+The `src/vendor/` directory contains single-header libraries that are included directly in the source tree rather than fetched externally:
+
+| Library | File | License | Purpose |
+|---------|------|---------|---------|
+| gif_load | `src/vendor/gif_load.h` | Public domain (Unlicense) | Animated GIF decoding for panel animations |
+
+We chose `gif_load` over rolling our own GIF decoder (as the original SDK does) because:
+- It's ~200 lines of battle-tested C code vs ~400 lines of custom LZW implementation
+- It handles edge cases the original SDK doesn't (interlacing, partial GIFs)
+- GIF is a frozen spec (unchanged since 1989) so maintenance isn't a concern
+- Public domain means zero license friction
 
 ## Original SDK source
 
@@ -336,6 +350,12 @@ void SMX_ForceRecalibration(int pad);
 // Re-enable automatic panel lighting on both pads.
 void SMX_ReenableAutoLights();
 
+// Set panel LED colors (both pads, up to 30 FPS). lightDataSize must be 1350 or 864.
+void SMX_SetLights2(const char *lightData, int lightDataSize);
+
+// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).
+void SMX_SetLights(const char lightData[864]);
+
 // Set platform edge LED strip colors (88 LEDs × 3 bytes RGB = 264 bytes, firmware v4+).
 void SMX_SetPlatformLights(const char *pLightData);
 
@@ -359,9 +379,68 @@ const char *SMX_Version();
 
 // Get elapsed time in seconds since SDK was initialized.
 double SMX_GetMonotonicTime();
+
+// Load a GIF as a panel animation. GIF must be 14x15 or 23x24.
+bool SMX_LightsAnimation_Load(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+// Enable/disable automatic GIF animation playback at 30 FPS.
+void SMX_LightsAnimation_SetAuto(bool enable);
+
+// Prepare a GIF animation for upload to firmware EEPROM. GIF must be 23x24, max 32 frames.
+bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+// Begin uploading prepared animation data. Callback reports progress 0-100.
+void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, void *pUser);
 ```
 
 `pad` is 0 for player 1, 1 for player 2.
+
+## GIF animation format
+
+`SMX_LightsAnimation_Load` accepts animated GIF files in a specific layout. The GIF encodes a 3×3 grid of panels with 1-pixel gutters between them.
+
+`SMX_LightsUpload_PrepareUpload` accepts the same format but only supports 23×24 GIFs (25-LED mode) with a maximum of 32 frames per animation type. Each panel is limited to 15 unique colors.
+
+### Supported dimensions
+
+| GIF size | LED mode | Panel region | Notes |
+|----------|----------|--------------|-------|
+| 14×15 | 4×4 (16 LEDs) | 4×4 pixels per panel | Legacy mode |
+| 23×24 | 5×5 (25 LEDs) | 8×8 pixels per panel | Full mode (firmware v4+) |
+
+### Panel layout
+
+Panels are arranged in a 3×3 grid, left-to-right, top-to-bottom:
+
+```
+┌────┬────┬────┐
+│ 0  │ 1  │ 2  │
+├────┼────┼────┤
+│ 3  │ 4  │ 5  │
+├────┼────┼────┤
+│ 6  │ 7  │ 8  │
+└────┴────┴────┘
+```
+
+**14×15 mode:** Each panel occupies a 4×4 pixel region at position `(col×5, row×5)`. The 1-pixel gaps between panels are ignored. The bottom row (y=14) is a flag row.
+
+**23×24 mode:** Each panel occupies an 8×8 pixel region at position `(col×8, row×8)`. The outer 4×4 LED grid is sampled at even pixel coordinates `(dx×2, dy×2)`. The inner 3×3 LED grid is sampled at odd coordinates `(dx×2+1, dy×2+1)`. The bottom row (y=23) is a flag row.
+
+### Loop frame marker
+
+By default, the animation loops back to frame 0 when it reaches the end. To set a different loop point (e.g., for a pressed animation with a lead-in), set the bottom-left pixel (x=0, y=height-1) to white (R≥128, A=255) on the frame that should be the loop target. Only the first such marker is used.
+
+### Frame timing
+
+GIF frame delays are in 10ms units. The SDK snaps 30ms and 40ms delays to exactly 1/30s (33.3ms) to align with the panel update rate. Other delays are used as-is. Zero-delay frames default to 1/30s.
+
+### Caveats
+
+- **Color depth:** GIF is limited to 256 colors per frame (palette-based). For smooth gradients, use local palettes per frame.
+- **Transparency:** Transparent pixels in the released animation show as black. Transparent pixels in the pressed animation leave the released animation visible underneath (overlay behavior).
+- **Black pixels in pressed animations:** Fully black (0,0,0) pixels in a pressed animation are treated as transparent and won't overwrite the released animation. Use (1,0,0) if you need near-black.
+- **Auto-lighting interaction:** While animations are playing via `SetAuto`, panels won't use their built-in step lighting. Call `SMX_LightsAnimation_SetAuto(false)` followed by `SMX_ReenableAutoLights()` to restore normal behavior.
+- **Direct lights override:** Calling `SMX_SetLights2` directly pauses animation playback for ~100ms, then animation resumes. This allows applications to temporarily override animation without stopping it.
 
 ## Update callback reasons
 
@@ -450,7 +529,10 @@ Panel: ┌───┬───┬───┐
 │   ├── SMXHIDRecorder.cpp       # HID traffic record/replay implementation
 │   ├── SMXConfigPacket.h        # Internal config struct
 │   ├── SMXConfigPacket.cpp      # Old firmware config format conversion
-│   └── SMXVersion.h.in          # Version header template (configured by CMake)
+│   ├── SMXPanelAnimation.cpp    # GIF animation loading and playback
+│   ├── SMXVersion.h.in          # Version header template (configured by CMake)
+│   └── vendor/
+│       └── gif_load.h           # Single-header GIF decoder (public domain)
 ├── tests/
 │   ├── test_main.cpp            # Version and log callback tests
 │   ├── test_device_connection.cpp # Device connection tests with fake HID
@@ -460,6 +542,8 @@ Panel: ┌───┬───┬───┐
 │   ├── test_helpers.cpp         # Utility function tests
 │   ├── test_helpers_manager.h   # Shared test infrastructure for manager-level tests
 │   ├── test_move_semantics.cpp  # Move semantics / pad swap regression tests
+│   ├── test_lights.cpp          # Panel LED control tests
+│   ├── test_panel_animation.cpp # GIF animation loading tests
 │   ├── test_replay.cpp          # HID traffic replay regression tests
 │   └── test_integration.cpp     # Integration tests (real hardware)
 ├── sample/
@@ -485,6 +569,10 @@ This abstraction exists for two reasons:
 1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
 
 2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
+
+## Future projects
+
+- **GIF animation editor** — A GUI tool for creating and previewing GIF animations that conform to the SMX panel format (correct dimensions, panel grid layout, color limits, loop frame markers). Would allow visual editing of per-panel animations with real-time preview on connected pads.
 
 ## Acknowledgments
 

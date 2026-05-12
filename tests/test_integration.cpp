@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -69,76 +70,22 @@ static bool WaitFor(function<bool()> cond, int iTimeoutMs = 5000)
     return true;
 }
 
-TEST_CASE("Real hardware: comprehensive command test")
+// --- Helper: connect with optional recording to a subdirectory ---
+
+static bool StartWithRecording(const string &sSubDir, atomic<int> &iConnected, int iExpected)
 {
-    // Check if hardware is present
-    auto pEnum = CreateHIDAPIEnumerator();
-    pEnum->Init();
-    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
-    pEnum->Exit();
-
-    if(devices.empty())
-    {
-        MESSAGE("No SMX hardware detected, skipping integration test");
-        return;
-    }
-
-    int iDeviceCount = static_cast<int>(devices.size());
-    MESSAGE("Found ", iDeviceCount, " SMX device(s)");
-
-    // Determine capture subdirectory. For a single device, we need to connect
-    // first to know if it's P1 or P2, so we defer directory creation.
-    string sCaptureDir = GetCaptureDir();
-    string sSubDir;
-    if(!sCaptureDir.empty() && iDeviceCount >= 2)
-        sSubDir = sCaptureDir + "/both_pads";
-
-    // Create enumerator (optionally recording)
     unique_ptr<IHIDEnumerator> pEnumerator;
-    if(!sSubDir.empty())
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
     {
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-    else if(sCaptureDir.empty())
-    {
-        pEnumerator = CreateHIDAPIEnumerator();
+        string sDir = sCaptureDir + "/" + sSubDir;
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sDir));
     }
     else
     {
-        // Single device — we'll determine P1/P2 after connection.
-        // Use a non-recording enumerator first to detect, then restart with recording.
-        // Actually, just connect without recording, check P1/P2, stop, then reconnect with recording.
         pEnumerator = CreateHIDAPIEnumerator();
     }
 
-    // For single-device + capture: detect P1/P2 first, then re-run with recording
-    if(!sCaptureDir.empty() && iDeviceCount == 1 && sSubDir.empty())
-    {
-        atomic<int> iConnected{0};
-        SMX_StartWithEnumerator(
-            [](int, SMXUpdateCallbackReason reason, void *pUser) {
-                if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                    static_cast<atomic<int>*>(pUser)->fetch_add(1);
-            },
-            &iConnected, std::move(pEnumerator));
-
-        REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
-
-        // Determine P1 or P2
-        SMXInfo info0, info1;
-        SMX_GetInfo(0, &info0);
-        SMX_GetInfo(1, &info1);
-        bool bIsP2 = info1.m_bConnected && info1.m_bIsPlayer2;
-        SMX_Stop();
-
-        sSubDir = sCaptureDir + (bIsP2 ? "/p2_solo" : "/p1_solo");
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-
-    // Start SDK
-    atomic<int> iConnected{0};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
@@ -146,83 +93,119 @@ TEST_CASE("Real hardware: comprehensive command test")
         },
         &iConnected, std::move(pEnumerator));
 
-    REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
+    return WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000);
+}
+
+static int DetectHardware()
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+    return static_cast<int>(devices.size());
+}
+
+TEST_CASE("Real hardware: connection and device info")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("connection", iConnected, iDeviceCount));
+
+    int iConnectedCount = 0;
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(!info.m_bConnected) continue;
+        iConnectedCount++;
+        CHECK(info.m_iFirmwareVersion > 0);
+        MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
+                " p2=", info.m_bIsPlayer2,
+                " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
+    }
+    CHECK(iConnectedCount == iDeviceCount);
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: force recalibration")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("force_recalibration", iConnected, iDeviceCount));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+        {
+            SMX_ForceRecalibration(i);
+            MESSAGE("Sent force recalibration to pad ", i);
+        }
+    }
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after recalibration");
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: panel test mode")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("panel_test_mode", iConnected, iDeviceCount));
+
+    SMX_SetPanelTestMode(PanelTestMode_PressureTest);
+    MESSAGE("Enabled pressure test mode");
+    this_thread::sleep_for(chrono::seconds(2));
+
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected during test mode");
+    }
+
+    SMX_SetPanelTestMode(PanelTestMode_Off);
+    MESSAGE("Disabled panel test mode");
     this_thread::sleep_for(chrono::milliseconds(200));
 
-    // --- Verify connection ---
-    SUBCASE("connection") {
-        int iConnectedCount = 0;
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(!info.m_bConnected)
-                continue;
-            iConnectedCount++;
-            CHECK(info.m_iFirmwareVersion > 0);
-            MESSAGE("Slot ", i, ": fw=", info.m_iFirmwareVersion,
-                    " p2=", info.m_bIsPlayer2,
-                    " serial=", info.m_bHasSerialNumber ? info.m_Serial : "(none)");
-        }
-        CHECK(iConnectedCount == iDeviceCount);
-    }
+    SMX_Stop();
+}
 
-    // --- Force recalibration ---
-    SUBCASE("force recalibration") {
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-            {
-                SMX_ForceRecalibration(i);
-                MESSAGE("Sent force recalibration to pad ", i);
-            }
-        }
-        this_thread::sleep_for(chrono::milliseconds(500));
+TEST_CASE("Real hardware: re-enable auto lights")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
 
-        // Verify still connected
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected after recalibration");
-        }
-    }
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("reenable_auto_lights", iConnected, iDeviceCount));
 
-    // --- Panel test mode ---
-    SUBCASE("panel test mode") {
-        SMX_SetPanelTestMode(PanelTestMode_PressureTest);
-        MESSAGE("Enabled pressure test mode");
-        this_thread::sleep_for(chrono::seconds(2));
+    SMX_ReenableAutoLights();
+    MESSAGE("Sent re-enable auto lights");
+    this_thread::sleep_for(chrono::milliseconds(500));
 
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected during test mode");
-        }
-
-        SMX_SetPanelTestMode(PanelTestMode_Off);
-        MESSAGE("Disabled panel test mode");
-        this_thread::sleep_for(chrono::milliseconds(200));
-    }
-
-    // --- Re-enable auto lights ---
-    SUBCASE("re-enable auto lights") {
-        SMX_ReenableAutoLights();
-        MESSAGE("Sent re-enable auto lights");
-        this_thread::sleep_for(chrono::milliseconds(500));
-
-        for(int i = 0; i < 2; i++)
-        {
-            SMXInfo info;
-            SMX_GetInfo(i, &info);
-            if(info.m_bConnected)
-                MESSAGE("Pad ", i, " still connected after re-enable auto lights");
-        }
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after re-enable auto lights");
     }
 
     SMX_Stop();
@@ -280,97 +263,6 @@ TEST_CASE("Real hardware: input state reads")
 
     MESSAGE("Fast (500us): ", iPacketsFast, " input packets/sec");
     CHECK(iPacketsFast >= 10);
-
-    SMX_Stop();
-}
-
-TEST_CASE("Real hardware: factory reset restores defaults")
-{
-    auto pEnum = CreateHIDAPIEnumerator();
-    pEnum->Init();
-    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
-    pEnum->Exit();
-
-    if(devices.empty())
-    {
-        MESSAGE("No SMX hardware detected, skipping integration test");
-        return;
-    }
-
-    // Set up enumerator with optional recording
-    unique_ptr<IHIDEnumerator> pEnumerator;
-    string sCaptureDir = GetCaptureDir();
-    if(!sCaptureDir.empty())
-    {
-        string sSubDir = sCaptureDir + "/factory_reset";
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-    else
-    {
-        pEnumerator = CreateHIDAPIEnumerator();
-    }
-
-    atomic<int> iConnected{0};
-    atomic<int> iConfigUpdated{0};
-
-    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
-    CbData cbData{&iConnected, &iConfigUpdated};
-
-    SMX_StartWithEnumerator(
-        [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            auto *d = static_cast<CbData*>(pUser);
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                d->pConnected->fetch_add(1);
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                d->pConfigUpdated->fetch_add(1);
-        },
-        &cbData, std::move(pEnumerator));
-
-    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
-
-    // Find a connected pad
-    int iPad = -1;
-    for(int i = 0; i < 2; i++)
-    {
-        SMXInfo info;
-        SMX_GetInfo(i, &info);
-        if(info.m_bConnected) { iPad = i; break; }
-    }
-    REQUIRE(iPad >= 0);
-
-    // Save original config
-    SMXConfig originalConfig = {};
-    REQUIRE(SMX_GetConfig(iPad, &originalConfig));
-    MESSAGE("Original panelDebounceMicroseconds: ", originalConfig.panelDebounceMicroseconds);
-
-    // Set a non-default value
-    SMXConfig modifiedConfig = originalConfig;
-    modifiedConfig.panelDebounceMicroseconds = 9999;
-    int iCountBefore = iConfigUpdated.load();
-    SMX_SetConfig(iPad, &modifiedConfig);
-    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
-
-    // Verify the modification took
-    SMXConfig readBack = {};
-    REQUIRE(SMX_GetConfig(iPad, &readBack));
-    REQUIRE(readBack.panelDebounceMicroseconds == 9999);
-
-    // Factory reset
-    iCountBefore = iConfigUpdated.load();
-    SMX_FactoryReset(iPad);
-    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
-
-    // Verify config was reset (should no longer be 9999)
-    SMXConfig resetConfig = {};
-    REQUIRE(SMX_GetConfig(iPad, &resetConfig));
-    CHECK(resetConfig.panelDebounceMicroseconds != 9999);
-    MESSAGE("After factory reset panelDebounceMicroseconds: ", resetConfig.panelDebounceMicroseconds);
-
-    // Restore original config
-    iCountBefore = iConfigUpdated.load();
-    SMX_SetConfig(iPad, &originalConfig);
-    WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
 
     SMX_Stop();
 }
@@ -660,6 +552,532 @@ TEST_CASE("Real hardware: sensor test mode all modes")
 
         SMX_SetTestMode(iPad, SensorTestMode_Off);
         this_thread::sleep_for(chrono::milliseconds(200));
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: panel lights rainbow sweep at 30 FPS")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/panel_lights";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    int iExpected = static_cast<int>(devices.size());
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000));
+
+    MESSAGE("Connected ", iConnected.load(), " pad(s), running 3-second rainbow sweep");
+
+    // HSV to RGB helper (hue 0-360, returns r/g/b 0-255)
+    auto hsvToRgb = [](float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b) {
+        float c = v * s;
+        float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+        float m = v - c;
+        float rf = 0, gf = 0, bf = 0;
+        if(h < 60)       { rf = c; gf = x; }
+        else if(h < 120) { rf = x; gf = c; }
+        else if(h < 180) { gf = c; bf = x; }
+        else if(h < 240) { gf = x; bf = c; }
+        else if(h < 300) { rf = x; bf = c; }
+        else             { rf = c; bf = x; }
+        r = uint8_t((rf + m) * 255.0f);
+        g = uint8_t((gf + m) * 255.0f);
+        b = uint8_t((bf + m) * 255.0f);
+    };
+
+    // Run a rainbow sweep across all panels for 3 seconds at 30 FPS.
+    // Each panel gets a different hue offset so the rainbow "moves" across the pad.
+    const int iDurationMs = 3000;
+    const int iFrameMs = 33; // ~30 FPS
+    const int iLedsPerPanel = 25;
+    const int iTotalBytes = 2 * 9 * iLedsPerPanel * 3; // 1350
+
+    auto tStart = chrono::steady_clock::now();
+    int iFrameCount = 0;
+
+    while(true)
+    {
+        auto tNow = chrono::steady_clock::now();
+        int iElapsedMs = static_cast<int>(
+            chrono::duration_cast<chrono::milliseconds>(tNow - tStart).count());
+        if(iElapsedMs >= iDurationMs)
+            break;
+
+        float fProgress = static_cast<float>(iElapsedMs) / iDurationMs; // 0.0 to 1.0
+
+        vector<char> lightData(iTotalBytes, 0);
+        for(int iPad = 0; iPad < 2; iPad++)
+        {
+            for(int iPanel = 0; iPanel < 9; iPanel++)
+            {
+                // Each panel gets a hue offset based on its position + time
+                float fBaseHue = fmodf(fProgress * 360.0f + iPanel * 40.0f + iPad * 180.0f, 360.0f);
+
+                for(int iLed = 0; iLed < iLedsPerPanel; iLed++)
+                {
+                    // Slight hue variation per LED within a panel
+                    float fHue = fmodf(fBaseHue + iLed * 2.0f, 360.0f);
+                    uint8_t r, g, b;
+                    hsvToRgb(fHue, 1.0f, 1.0f, r, g, b);
+
+                    int iOffset = (iPad * 9 * iLedsPerPanel + iPanel * iLedsPerPanel + iLed) * 3;
+                    lightData[iOffset + 0] = static_cast<char>(r);
+                    lightData[iOffset + 1] = static_cast<char>(g);
+                    lightData[iOffset + 2] = static_cast<char>(b);
+                }
+            }
+        }
+
+        SMX_SetLights2(lightData.data(), iTotalBytes);
+        iFrameCount++;
+
+        // Sleep to maintain ~30 FPS
+        auto tFrameEnd = tNow + chrono::milliseconds(iFrameMs);
+        this_thread::sleep_until(tFrameEnd);
+    }
+
+    MESSAGE("Sent ", iFrameCount, " frames in 3 seconds (~", iFrameCount / 3, " FPS)");
+    CHECK(iFrameCount >= 80); // Should be ~90 frames at 30 FPS
+
+    // Re-enable auto lights to restore normal behavior
+    SMX_ReenableAutoLights();
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    // Verify still connected
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after lights test");
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: panel animation playback from GIF")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/panel_animation";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    int iExpected = static_cast<int>(devices.size());
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000));
+
+    MESSAGE("Connected ", iConnected.load(), " pad(s)");
+
+    // --- Generate a 23x24 animated GIF with a color cycle ---
+    // HSV helper
+    auto hsvToRgb = [](float h, uint8_t &r, uint8_t &g, uint8_t &b) {
+        float c = 1.0f, x = 1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f);
+        float rf = 0, gf = 0, bf = 0;
+        if(h < 60)       { rf = c; gf = x; }
+        else if(h < 120) { rf = x; gf = c; }
+        else if(h < 180) { gf = c; bf = x; }
+        else if(h < 240) { gf = x; bf = c; }
+        else if(h < 300) { rf = x; bf = c; }
+        else             { rf = c; bf = x; }
+        r = uint8_t(rf * 255); g = uint8_t(gf * 255); b = uint8_t(bf * 255);
+    };
+
+    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 100ms delay.
+    // Each frame is a solid color across all panels.
+    const int W = 23, H = 24;
+    const int numFrames = 6;
+
+    vector<uint8_t> gif;
+    auto pushByte = [&](uint8_t b) { gif.push_back(b); };
+    auto pushLE16 = [&](uint16_t v) { gif.push_back(v & 0xFF); gif.push_back(v >> 8); };
+
+    // Header + LSD
+    const char *hdr = "GIF89a";
+    gif.insert(gif.end(), hdr, hdr + 6);
+    pushLE16(W); pushLE16(H);
+    // GCT: 8 colors (3 bits), flag set
+    pushByte(0x82); // GCT flag + 3-bit color res + 8 colors (2^(2+1)=8)
+    pushByte(0); pushByte(0);
+
+    // Global Color Table: 8 entries (we'll use indices 0-5 for our 6 hues)
+    for(int i = 0; i < 8; i++)
+    {
+        uint8_t r, g, b;
+        hsvToRgb(i * 60.0f, r, g, b);
+        pushByte(r); pushByte(g); pushByte(b);
+    }
+
+    // NETSCAPE looping extension
+    pushByte(0x21); pushByte(0xFF); pushByte(11);
+    const char *ns = "NETSCAPE2.0";
+    gif.insert(gif.end(), ns, ns + 11);
+    pushByte(3); pushByte(1); pushLE16(0); pushByte(0);
+
+    // Frames
+    for(int f = 0; f < numFrames; f++)
+    {
+        // GCE: 100ms delay
+        pushByte(0x21); pushByte(0xF9); pushByte(4);
+        pushByte(0); pushLE16(10); pushByte(0); pushByte(0);
+
+        // Image descriptor
+        pushByte(0x2C);
+        pushLE16(0); pushLE16(0); pushLE16(W); pushLE16(H);
+        pushByte(0);
+
+        // LZW: min code size 3 (for 8-color palette)
+        pushByte(3);
+        int totalPixels = W * H;
+        // clear=8, end=9, initial code size=4 bits
+        // Emit clear code frequently to keep code size at 4 bits (avoids
+        // needing to handle LZW dictionary growth in this simple encoder).
+        vector<uint8_t> lzw;
+        int bits = 0, bitCount = 0, codeSize = 4;
+        auto emit = [&](int code) {
+            bits |= (code << bitCount);
+            bitCount += codeSize;
+            while(bitCount >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bitCount -= 8; }
+        };
+        emit(8); // clear
+        int sinceLastClear = 0;
+        for(int i = 0; i < totalPixels; i++)
+        {
+            emit(f);
+            sinceLastClear++;
+            // Reset before dictionary grows past code size 4 (max 6 entries before needing 5 bits)
+            if(sinceLastClear >= 5)
+            {
+                emit(8); // clear — resets dictionary
+                sinceLastClear = 0;
+            }
+        }
+        emit(9); // end
+        if(bitCount > 0) lzw.push_back(bits & 0xFF);
+
+        for(size_t i = 0; i < lzw.size(); ) {
+            size_t bs = min((size_t)255, lzw.size() - i);
+            pushByte((uint8_t)bs);
+            gif.insert(gif.end(), lzw.begin() + i, lzw.begin() + i + bs);
+            i += bs;
+        }
+        pushByte(0);
+    }
+    pushByte(0x3B); // trailer
+
+    MESSAGE("Generated ", numFrames, "-frame animated GIF (", gif.size(), " bytes)");
+
+    // --- Load and play the animation ---
+    const char *error = nullptr;
+    bool bLoaded = SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(),
+                                             0, SMX_LightsType_Released, &error);
+    REQUIRE(bLoaded);
+    MESSAGE("Loaded released animation for pad 0");
+
+    // Also load for pad 1 if connected
+    SMXInfo info1;
+    SMX_GetInfo(1, &info1);
+    if(info1.m_bConnected)
+    {
+        bLoaded = SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(),
+                                            1, SMX_LightsType_Released, &error);
+        REQUIRE(bLoaded);
+        MESSAGE("Loaded released animation for pad 1");
+    }
+
+    // Enable auto-animation and let it play for 3 seconds
+    SMX_LightsAnimation_SetAuto(true);
+    MESSAGE("Auto-animation enabled, playing for 3 seconds...");
+    this_thread::sleep_for(chrono::seconds(3));
+
+    // Verify still connected
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected during animation");
+    }
+
+    // Disable animation
+    SMX_LightsAnimation_SetAuto(false);
+    MESSAGE("Auto-animation disabled");
+
+    // Re-enable auto lights to restore normal behavior
+    SMX_ReenableAutoLights();
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: animation upload to firmware")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("animation_upload", iConnected, iDeviceCount));
+
+    // Verify firmware v4+ (required for upload)
+    SMXInfo info;
+    SMX_GetInfo(0, &info);
+    REQUIRE(info.m_bConnected);
+    if(info.m_iFirmwareVersion < 4)
+    {
+        MESSAGE("Firmware v4+ required for animation upload, skipping (fw=", info.m_iFirmwareVersion, ")");
+        SMX_Stop();
+        return;
+    }
+
+    // --- Generate a simple 23x24 animated GIF (3 frames: red, green, blue) ---
+    const int W = 23, H = 24;
+    vector<uint8_t> gif;
+    auto pb = [&](uint8_t b) { gif.push_back(b); };
+    auto p16 = [&](uint16_t v) { gif.push_back(v & 0xFF); gif.push_back(v >> 8); };
+
+    // Header + LSD with 8-color GCT
+    const char *hdr = "GIF89a";
+    gif.insert(gif.end(), hdr, hdr + 6);
+    p16(W); p16(H);
+    pb(0x82); pb(0); pb(0); // GCT flag, 8 colors
+    uint8_t colors[8][3] = {{255,0,0},{0,255,0},{0,0,255},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}};
+    for(int i = 0; i < 8; i++) { pb(colors[i][0]); pb(colors[i][1]); pb(colors[i][2]); }
+
+    // NETSCAPE loop
+    pb(0x21); pb(0xFF); pb(11);
+    const char *ns = "NETSCAPE2.0";
+    gif.insert(gif.end(), ns, ns + 11);
+    pb(3); pb(1); p16(0); pb(0);
+
+    // 3 frames at 500ms each
+    for(int f = 0; f < 3; f++)
+    {
+        pb(0x21); pb(0xF9); pb(4); pb(0); p16(50); pb(0); pb(0); // GCE: 500ms
+        pb(0x2C); p16(0); p16(0); p16(W); p16(H); pb(0);
+        pb(3); // LZW min code size
+        int total = W * H;
+        vector<uint8_t> lzw;
+        int bits = 0, bc = 0, cs = 4;
+        auto emit = [&](int code) { bits |= (code << bc); bc += cs; while(bc >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bc -= 8; } };
+        emit(8); // clear
+        int since = 0;
+        for(int i = 0; i < total; i++) { emit(f); since++; if(since >= 5) { emit(8); since = 0; } }
+        emit(9); // end
+        if(bc > 0) lzw.push_back(bits & 0xFF);
+        for(size_t i = 0; i < lzw.size(); ) { size_t bs = min((size_t)255, lzw.size() - i); pb((uint8_t)bs); gif.insert(gif.end(), lzw.begin() + i, lzw.begin() + i + bs); i += bs; }
+        pb(0);
+    }
+    pb(0x3B);
+
+    MESSAGE("Generated 3-frame upload GIF (", gif.size(), " bytes)");
+
+    // --- Prepare and upload released animation to all connected pads ---
+    const char *error = nullptr;
+    // --- Generate a pressed animation (solid yellow) ---
+    vector<uint8_t> pressedGif;
+    auto pb2 = [&](uint8_t b) { pressedGif.push_back(b); };
+    auto p162 = [&](uint16_t v) { pressedGif.push_back(v & 0xFF); pressedGif.push_back(v >> 8); };
+    {
+        const char *h2 = "GIF89a";
+        pressedGif.insert(pressedGif.end(), h2, h2 + 6);
+        p162(W); p162(H); pb2(0x80); pb2(0); pb2(0);
+        pb2(255); pb2(255); pb2(0); // color 0: yellow
+        pb2(0); pb2(0); pb2(0);     // color 1: black
+        pb2(0x2C); p162(0); p162(0); p162(W); p162(H); pb2(0);
+        pb2(2); // LZW min code size
+        int total = W * H;
+        vector<uint8_t> lzw;
+        int bits = 0, bc = 0, cs = 3;
+        auto emit = [&](int code) { bits |= (code << bc); bc += cs; while(bc >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bc -= 8; } };
+        emit(4); int since = 0;
+        for(int i = 0; i < total; i++) { emit(0); since++; if(since >= 2) { emit(4); since = 0; } }
+        emit(5); if(bc > 0) lzw.push_back(bits & 0xFF);
+        for(size_t i = 0; i < lzw.size(); ) { size_t bs = min((size_t)255, lzw.size() - i); pb2((uint8_t)bs); pressedGif.insert(pressedGif.end(), lzw.begin() + i, lzw.begin() + i + bs); i += bs; }
+        pb2(0); pb2(0x3B);
+    }
+
+    // --- Prepare and upload to all connected pads ---
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
+
+        bool bPrepared = SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(),
+                                                         iPad, SMX_LightsType_Released, &error);
+        REQUIRE(bPrepared);
+
+        bPrepared = SMX_LightsUpload_PrepareUpload((const char*)pressedGif.data(), pressedGif.size(),
+                                                    iPad, SMX_LightsType_Pressed, &error);
+        REQUIRE(bPrepared);
+        MESSAGE("Prepared released + pressed animations for pad ", iPad);
+    }
+
+    // Begin upload for each connected pad
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
+
+        struct UploadState {
+            atomic<int> lastProgress{0};
+            atomic<bool> complete{false};
+        } state;
+
+        SMX_LightsUpload_BeginUpload(iPad,
+            [](int progress, void *pUser) {
+                auto *s = static_cast<UploadState*>(pUser);
+                s->lastProgress.store(progress);
+                if(progress >= 100)
+                    s->complete.store(true);
+            }, &state);
+
+        bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 60000);
+        CHECK(bCompleted);
+        MESSAGE("Pad ", iPad, " upload completed, progress: ", state.lastProgress.load());
+    }
+
+    // Give the firmware a moment to apply the animation
+    this_thread::sleep_for(chrono::seconds(5));
+    MESSAGE("Animation playing: released=red/green/blue cycle, pressed=yellow. Step on pad to test!");
+
+    // Verify still connected
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(i, &padInfo);
+        if(padInfo.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after upload");
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: factory reset restores defaults")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    atomic<int> iConfigUpdated{0};
+
+    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
+    CbData cbData{&iConnected, &iConfigUpdated};
+
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sCaptureDir + "/factory_reset"));
+    else
+        pEnumerator = CreateHIDAPIEnumerator();
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CbData*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                d->pConnected->fetch_add(1);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                d->pConfigUpdated->fetch_add(1);
+        },
+        &cbData, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
+
+    // Factory reset all connected pads, then restore original config.
+    // This clears uploaded animations from EEPROM. Placed last so it
+    // cleans up after all other tests.
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
+
+        // Save original config
+        SMXConfig originalConfig = {};
+        REQUIRE(SMX_GetConfig(iPad, &originalConfig));
+        MESSAGE("Pad ", iPad, " original panelDebounceMicroseconds: ",
+                originalConfig.panelDebounceMicroseconds);
+
+        // Set a non-default value to verify reset works
+        SMXConfig modifiedConfig = originalConfig;
+        modifiedConfig.panelDebounceMicroseconds = 9999;
+        int iCountBefore = iConfigUpdated.load();
+        SMX_SetConfig(iPad, &modifiedConfig);
+        REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+        // Factory reset
+        iCountBefore = iConfigUpdated.load();
+        SMX_FactoryReset(iPad);
+        REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+        // Verify config was reset
+        SMXConfig resetConfig = {};
+        REQUIRE(SMX_GetConfig(iPad, &resetConfig));
+        CHECK(resetConfig.panelDebounceMicroseconds != 9999);
+        MESSAGE("Pad ", iPad, " after reset panelDebounceMicroseconds: ",
+                resetConfig.panelDebounceMicroseconds);
+
+        // Restore original config
+        iCountBefore = iConfigUpdated.load();
+        SMX_SetConfig(iPad, &originalConfig);
+        WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
+        MESSAGE("Pad ", iPad, " config restored");
     }
 
     SMX_Stop();

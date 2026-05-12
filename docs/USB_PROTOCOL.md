@@ -181,10 +181,16 @@ All application-level commands follow the same pattern: the host sends a command
 | Force Recalibration | `'C'` + `'\n'` | Host → Device | Trigger recalibration |
 | Set Serial | `'s'` + serial(16) + `'\n'` | Host → Device | Assign serial number |
 | Re-enable Auto Lights | `'S'` + `' 1'` + `'\n'` | Host → Device | Resume auto-lighting |
+| Panel Lights (inner) | `'4'` + RGB data + `'\n'` | Host → Device | Inner 3×3 grid LEDs (fw v4+) |
+| Panel Lights (top) | `'2'` + RGB data + `'\n'` | Host → Device | Top 2 rows of 4×4 grid |
+| Panel Lights (bottom) | `'3'` + RGB data + `'\n'` | Host → Device | Bottom 2 rows of 4×4 grid |
+| Lights Off (legacy) | `'l'` + 108 zeros + `'\n'` | Host → Device | Clear all panel LEDs |
 | Platform Lights | `'L'` + strip + count + RGB | Host → Device | Set LED strip colors |
 | Panel Test Mode | `'t'` + `' '` + mode + `'\n'` | Host → Device | Diagnostic lighting |
 | Sensor Test Request | `'y'` + mode + `'\n'` | Host → Device | Request sensor data |
 | Sensor Test Response | `'y'` + mode + size + data | Device → Host | Sensor test results |
+| Animation Upload | `'m'` + panel + idx + final + offset + size + data | Host → Device | Upload animation data to EEPROM |
+| Upload Delay | `'d'` + milliseconds | Host → Device | Delay master for EEPROM write time |
 | Config Response (new) | `'G'` + size + data | Device → Host | Config data (fw v5+) |
 | Config Response (old) | `'g'` + size + data | Device → Host | Config data (fw < v5) |
 
@@ -236,6 +242,53 @@ Byte 17: '\n'
 ```
 
 The serial is permanently stored in the device's non-volatile memory.
+
+### Panel LED Control
+
+Panel LEDs are updated via three separate commands sent in sequence. Each panel has 25 LEDs: a 4×4 outer grid (16 LEDs) plus a 3×3 inner grid (9 LEDs, firmware v4+ only).
+
+**LED layout per panel (25-LED mode):**
+
+```
+Outer 4×4:          Inner 3×3:
+00  01  02  03
+   16  17  18       (between outer rows 0-1 and 2-3)
+04  05  06  07
+   19  20  21       (between outer rows 2-3 and 4-5)
+08  09  10  11
+   22  23  24       (between outer rows 4-5 and 6-7)
+12  13  14  15
+```
+
+**Commands (sent in order for each update):**
+
+| Command | Prefix | Payload | Size | Notes |
+|---------|--------|---------|------|-------|
+| Inner grid | `'4'` | 9 panels × 9 LEDs × 3 RGB | 244 bytes + `'\n'` | Firmware v4+ only |
+| Top half | `'2'` | 9 panels × 8 LEDs × 3 RGB | 217 bytes + `'\n'` | Top 2 rows of 4×4 |
+| Bottom half | `'3'` | 9 panels × 8 LEDs × 3 RGB | 217 bytes + `'\n'` | Bottom 2 rows of 4×4 |
+
+**Color scaling:** All RGB values are multiplied by 0.6666 before sending. Values above ~170 don't make LEDs brighter; this improves contrast and reduces power draw.
+
+**Rate limiting:** Updates are capped at 30 FPS. If updates arrive faster, the most recent data replaces pending data.
+
+**Firmware version timing:**
+- **Firmware < v4:** Commands `'2'` and `'3'` are sent with a 1/60s delay between them. The master controller needs time to relay data to panels. Command `'4'` is not sent.
+- **Firmware ≥ v4:** All three commands are queued immediately. The firmware handles flow control internally, buffering commands until the previous one finishes sending to panels.
+
+**Auto-lighting:** Panels return to automatic step lighting if no lights commands are received for a few seconds (controlled by `autoLightsTimeout` in config). Applications should send updates continuously, even if colors aren't changing.
+
+**Panel test mode interaction:** Lights commands are silently dropped while a panel test mode is active.
+
+### Lights Off (Legacy)
+
+```
+Byte 0: 'l'
+Bytes 1-108: zeros (9 panels × 4 LEDs × 3 RGB)
+Byte 109: '\n'
+```
+
+The `'l'` command is a legacy lights command that predates the `'2'`/`'3'`/`'4'` split. It is only used to blank all panel LEDs (e.g., before entering panel test mode). The 108 zero bytes is the minimum payload the firmware expects for this command to be valid.
 
 ### Platform LED Strip
 
@@ -305,6 +358,44 @@ Bit 79:     Bad jumper [3]
 ```
 
 Each panel has 4 sensors. The sensor level meaning depends on the test mode.
+
+### Animation Upload
+
+Animations are uploaded to panel EEPROM for offline playback (when the SDK is not controlling lights). The upload uses two commands:
+
+**Upload packet (`'m'`):**
+
+```
+Byte 0:     'm' (0x6D)
+Byte 1:     Panel index (0-8 for panels, 0xFF for master timing data)
+Byte 2:     Animation index (0 = released, 1 = pressed)
+Byte 3:     Final packet flag (1 = last packet, triggers firmware to apply)
+Bytes 4-5:  Offset into panel/master data (uint16_t, little-endian)
+Byte 6:     Data size (1-240)
+Bytes 7+:   Data payload (up to 240 bytes)
+```
+
+**Delay packet (`'d'`):**
+
+```
+Byte 0:     'd' (0x64)
+Bytes 1-2:  Delay in milliseconds (uint16_t, little-endian)
+```
+
+**Panel data layout (922 bytes per panel):**
+- `graphics[64]`: 64 packed sprites, 13 bytes each (4-bit paletted, 25 pixels). Released uses indices 0-31, pressed uses 32-63.
+- `palettes[2]`: Two 15-color palettes (45 bytes each). Index 0 for released, 1 for pressed.
+
+**Master timing data (129 bytes):**
+- `loop_animation_frame` (1 byte): frame index to loop back to
+- `frames[64]`: graphic indices to display (0xFF = end/loop)
+- `delay[64]`: duration of each frame in 30 FPS counts
+
+**Upload strategy:**
+- Panel data is interleaved across all 9 panels (one packet per panel per burst) to parallelize EEPROM writes
+- After each burst, a delay of `max_packet_size × 3.4ms` is inserted (EEPROM write time per byte)
+- Panel data is sent twice for reliability (panels ignore unchanged data)
+- Master timing data is sent last with `final_packet=1` on the last packet
 
 ### Factory Reset
 
