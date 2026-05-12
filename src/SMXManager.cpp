@@ -7,6 +7,7 @@
 
 #include "SMXDeviceConnection.h"
 #include "SMXHelpers.h"
+#include "SMXProtocolConstants.h"
 
 using namespace std;
 
@@ -66,14 +67,14 @@ SMXDevice *SMXManager::GetDevice(const int pad)
 void SMXManager::SetSerialNumbers()
 {
     lock_guard<recursive_mutex> lock(m_Lock);
-    for(auto & m_Device : m_Devices)
+    for(auto &device : m_Devices)
     {
         string sData = "s";
         uint8_t serial[SERIAL_SIZE];
         GenerateSerial(serial);
         sData.append(reinterpret_cast<char*>(serial), sizeof(serial));
         sData.append(1, '\n');
-        m_Device.SendCommand(sData);
+        device.SendCommand(sData);
     }
 }
 
@@ -86,8 +87,8 @@ void SMXManager::SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
 void SMXManager::ReenableAutoLights()
 {
     lock_guard<recursive_mutex> lock(m_Lock);
-    for(auto & m_Device : m_Devices)
-        m_Device.SendCommand("S 1\n");
+    for(auto &device : m_Devices)
+        device.SendCommand("S 1\n");
 }
 
 void SMXManager::SetPlatformLights(const char *pLightData)
@@ -107,8 +108,8 @@ void SMXManager::SetPlatformLights(const char *pLightData)
         string sCmd;
         sCmd.push_back('L');
         sCmd.push_back(0);   // strip index
-        sCmd.push_back(44);  // number of LEDs
-        sCmd.append(pLightData + iPad * 44 * 3, 44 * 3);
+        sCmd.push_back(PLATFORM_STRIP_LEDS);
+        sCmd.append(pLightData + iPad * PLATFORM_STRIP_LEDS * 3, PLATFORM_STRIP_LEDS * 3);
         m_Devices[iPad].SendCommand(sCmd);
     }
 }
@@ -130,8 +131,8 @@ void SMXManager::SetLights(const string sPanelLights[2])
         if(sData.empty())
             continue;
 
-        const int LightSize16 = 9*16*3;
-        const int LightSize25 = 9*25*3;
+        const int LightSize16 = BYTES_PER_PAD_16;
+        const int LightSize25 = BYTES_PER_PAD_25;
         if(sData.size() != LightSize16 && sData.size() != LightSize25)
         {
             Log(ssprintf("SetLights: expected %i or %i bytes, got %i",
@@ -154,7 +155,7 @@ void SMXManager::SetLights(const string sPanelLights[2])
             for(int iByte = 0; iByte < 4*4*3; ++iByte)
             {
                 uint8_t iColor = uint8_t(sData[iNextInputByte++]);
-                iColor = uint8_t(iColor * 0.6666f);
+                iColor = uint8_t(iColor * LED_COLOR_SCALE);
                 int iCmd = iByte < 4*2*3 ? 1 : 2;
                 sLightCommands[iCmd][iPad].push_back(iColor);
             }
@@ -162,7 +163,7 @@ void SMXManager::SetLights(const string sPanelLights[2])
             for(int iByte = 0; iByte < 3*3*3; ++iByte)
             {
                 uint8_t iColor = uint8_t(sData[iNextInputByte++]);
-                iColor = uint8_t(iColor * 0.6666f);
+                iColor = uint8_t(iColor * LED_COLOR_SCALE);
                 sLightCommands[0][iPad].push_back(iColor);
             }
         }
@@ -200,12 +201,11 @@ void SMXManager::SetLights(const string sPanelLights[2])
         // Firmware >= 4: queue all at once, firmware handles flow control.
         if(!bMasterIsV4)
         {
-            const double fDelayBetweenCommands = 1.0/60.0;
             fCommandTimes[1] = fSendCommandAt;
-            fCommandTimes[2] = fCommandTimes[1] + fDelayBetweenCommands;
+            fCommandTimes[2] = fCommandTimes[1] + LIGHTS_LEGACY_COMMAND_DELAY;
         }
 
-        m_fDelayLightCommandsUntil = fSendCommandAt + 1.0/30.0;
+        m_fDelayLightCommandsUntil = fSendCommandAt + LIGHTS_FRAME_INTERVAL;
 
         m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[0], {"", ""}});
         m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[1], {"", ""}});
@@ -271,8 +271,8 @@ void SMXManager::SetPanelTestMode(PanelTestMode mode)
 
 void SMXManager::SetInputStateMode(bool bAlwaysFire)
 {
-    for(auto & m_Device : m_Devices)
-        m_Device.GetConnection()->SetAlwaysFireInputCallback(bAlwaysFire);
+    for(auto &device : m_Devices)
+        device.GetConnection()->SetAlwaysFireInputCallback(bAlwaysFire);
 }
 
 // --- Private thread methods ---
@@ -366,7 +366,7 @@ void SMXManager::ThreadMain()
 void SMXManager::UpdatePanelTestMode()
 {
     if(m_PanelTestMode == m_LastSentPanelTestMode &&
-       (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < 1.0))
+       (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < PANEL_TEST_REFRESH_SECONDS))
         return;
 
     // When transitioning from Off to active, send a lights-off command to clear
@@ -374,16 +374,16 @@ void SMXManager::UpdatePanelTestMode()
     if(m_LastSentPanelTestMode == PanelTestMode_Off && m_PanelTestMode != PanelTestMode_Off)
     {
         string sCmd = "l";
-        sCmd.append(108, '\0');
+        sCmd.append(LEGACY_LIGHTS_PAYLOAD_SIZE, '\0');
         sCmd.push_back('\n');
-        for(auto & m_Device : m_Devices)
-            m_Device.SendCommand(sCmd);
+        for(auto &device : m_Devices)
+            device.SendCommand(sCmd);
     }
 
     m_fLastPanelTestModeSentAt = GetMonotonicTime();
     m_LastSentPanelTestMode = m_PanelTestMode;
-    for(auto & m_Device : m_Devices)
-        m_Device.SendCommand(ssprintf("t %c\n", m_PanelTestMode));
+    for(auto &device : m_Devices)
+        device.SendCommand(ssprintf("t %c\n", m_PanelTestMode));
 }
 
 void SMXManager::AttemptConnections()
@@ -392,9 +392,9 @@ void SMXManager::AttemptConnections()
     if(!m_Devices[0].GetDevicePath().empty() && !m_Devices[1].GetDevicePath().empty())
         return;
 
-    // Rate-limit enumeration to once per second to reduce syscalls.
+    // Rate-limit enumeration to reduce syscalls.
     double fNow = GetMonotonicTime();
-    if(fNow - m_fLastEnumerationTime < 1.0)
+    if(fNow - m_fLastEnumerationTime < ENUMERATION_INTERVAL_SECONDS)
         return;
     m_fLastEnumerationTime = fNow;
 
@@ -409,14 +409,14 @@ void SMXManager::AttemptConnections()
 
         // Skip if already open.
         bool bOpen = false;
-        for(const auto & m_Device : m_Devices)
-            if(m_Device.GetDevicePath() == dev.sPath) { bOpen = true; break; }
+        for(const auto &device : m_Devices)
+            if(device.GetDevicePath() == dev.sPath) { bOpen = true; break; }
         if(bOpen) continue;
 
         // Find an empty slot.
         SMXDevice *pSlot = nullptr;
-        for(auto & m_Device : m_Devices)
-            if(m_Device.GetDevicePath().empty()) { pSlot = &m_Device; break; }
+        for(auto &device : m_Devices)
+            if(device.GetDevicePath().empty()) { pSlot = &device; break; }
 
         if(!pSlot) { Log("No available slots for device."); break; }
 

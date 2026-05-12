@@ -529,6 +529,7 @@ Panel: ┌───┬───┬───┐
 │   ├── SMXManager.cpp           # Device manager / orchestration (implementation)
 │   ├── SMXDeviceConnection.h    # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp  # HID I/O class (implementation)
+│   ├── SMXProtocolConstants.h   # Device protocol constants (LEDs, timing, USB IDs)
 │   ├── SMXHIDInterface.h        # HID abstraction interfaces
 │   ├── SMXHIDInterface.cpp      # Real hidapi-backed implementation
 │   ├── SMXHIDRecorder.h         # HID traffic record/replay

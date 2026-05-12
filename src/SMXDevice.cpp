@@ -7,8 +7,25 @@
 
 #include "SMXConfigPacket.h"
 #include "SMXHelpers.h"
+#include "SMXProtocolConstants.h"
 
 using namespace std;
+
+namespace {
+
+/// Wire format for per-panel sensor test data, extracted bit-by-bit from interleaved response.
+#pragma pack(push, 1)
+struct detail_data {
+    uint8_t sig1:1, sig2:1, sig3:1;
+    uint8_t bad_sensor_0:1, bad_sensor_1:1, bad_sensor_2:1, bad_sensor_3:1;
+    uint8_t dummy:1;
+    int16_t sensors[4];
+    uint8_t dip:4;
+    uint8_t bad_sensor_dip_0:1, bad_sensor_dip_1:1, bad_sensor_dip_2:1, bad_sensor_dip_3:1;
+};
+#pragma pack(pop)
+
+} // anonymous namespace
 
 namespace SMX {
 
@@ -294,11 +311,11 @@ void SMXDevice::SendConfig()
     if(!m_bHaveConfig)
         return;
 
-    // Rate limit: don't write more than once per second.
+    // Rate limit: don't write more than once per CONFIG_WRITE_RATE_LIMIT_SECONDS.
     double fNow = GetMonotonicTime();
     if(m_fDelayConfigUpdatesUntil > fNow)
         return;
-    m_fDelayConfigUpdatesUntil = fNow + 1.0;
+    m_fDelayConfigUpdatesUntil = fNow + CONFIG_WRITE_RATE_LIMIT_SECONDS;
 
     const SMXDeviceInfo di = m_Connection.GetDeviceInfo();
 
@@ -341,8 +358,8 @@ void SMXDevice::UpdateSensorTestMode()
 
     if(m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
     {
-        // Timeout after 2 seconds.
-        if(GetMonotonicTime() - m_fSentSensorTestModeRequestAt < 2.0)
+        // Timeout if no response received.
+        if(GetMonotonicTime() - m_fSentSensorTestModeRequestAt < SENSOR_TEST_TIMEOUT_SECONDS)
             return;
     }
 
@@ -362,15 +379,7 @@ void SMXDevice::HandleSensorTestDataResponse(const string &buf)
 
     SensorTestMode iMode = static_cast<SensorTestMode>(buf[1]);
 
-    // Parse interleaved uint16_t data.
-    vector<uint16_t> data;
-    for(int i = 3; i < iSize * 2 + 3; i += 2)
-    {
-        uint16_t iValue = static_cast<uint8_t>(buf[i]) |
-                          (static_cast<uint8_t>(buf[i+1]) << 8);
-        data.push_back(iValue);
-    }
-
+    // Early-return if we're not waiting for this response or mode doesn't match.
     if(m_WaitingForSensorTestModeResponse == SensorTestMode_Off)
         return;
     if(iMode != m_WaitingForSensorTestModeResponse)
@@ -381,16 +390,14 @@ void SMXDevice::HandleSensorTestDataResponse(const string &buf)
     if(iMode != m_SensorTestMode)
         return;
 
-#pragma pack(push, 1)
-    struct detail_data {
-        uint8_t sig1:1, sig2:1, sig3:1;
-        uint8_t bad_sensor_0:1, bad_sensor_1:1, bad_sensor_2:1, bad_sensor_3:1;
-        uint8_t dummy:1;
-        int16_t sensors[4];
-        uint8_t dip:4;
-        uint8_t bad_sensor_dip_0:1, bad_sensor_dip_1:1, bad_sensor_dip_2:1, bad_sensor_dip_3:1;
-    };
-#pragma pack(pop)
+    // Parse interleaved uint16_t data.
+    vector<uint16_t> data;
+    for(int i = 3; i < iSize * 2 + 3; i += 2)
+    {
+        uint16_t iValue = static_cast<uint8_t>(buf[i]) |
+                          (static_cast<uint8_t>(buf[i+1]) << 8);
+        data.push_back(iValue);
+    }
 
     SMXSensorTestModeData &output = m_SensorTestData;
     memset(&output, 0, sizeof(output));

@@ -16,6 +16,24 @@ namespace SMX {
 using namespace std;
 using namespace SMX;
 
+namespace {
+
+/// Wire format for the device info response packet.
+#pragma pack(push, 1)
+struct data_info_packet
+{
+    char cmd;
+    uint8_t packet_size;
+    char player;
+    char unused2;
+    uint8_t serial[SERIAL_SIZE];
+    uint16_t firmware_version;
+    char unused3;
+};
+#pragma pack(pop)
+
+} // anonymous namespace
+
 SMXDeviceConnection::SMXDeviceConnection() = default;
 
 SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
@@ -210,26 +228,13 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         if(!m_pCurrentCommand || !m_pCurrentCommand->m_bIsDeviceInfoCommand)
             return;
 
-#pragma pack(push, 1)
-        struct data_info_packet
-        {
-            char cmd;
-            uint8_t packet_size;
-            char player;
-            char unused2;
-            uint8_t serial[SERIAL_SIZE];
-            uint16_t firmware_version;
-            char unused3;
-        };
-#pragma pack(pop)
+        data_info_packet packet = {};
+        memcpy(&packet, sPacket.data(), min(sPacket.size(), sizeof(packet)));
 
-        sPacket.resize(sizeof(data_info_packet), '\0');
-        const auto *packet = reinterpret_cast<const data_info_packet*>(sPacket.data());
+        m_DeviceInfo.m_bP2 = (packet.player == '1');
+        m_DeviceInfo.m_iFirmwareVersion = packet.firmware_version;
 
-        m_DeviceInfo.m_bP2 = (packet->player == '1');
-        m_DeviceInfo.m_iFirmwareVersion = packet->firmware_version;
-
-        const string sHexSerial = BinaryToHex(packet->serial, SERIAL_SIZE);
+        const string sHexSerial = BinaryToHex(packet.serial, SERIAL_SIZE);
         memcpy(m_DeviceInfo.m_Serial, sHexSerial.c_str(), 33);
 
         Log(ssprintf("Received device info. Master version: %i, P%i",
@@ -346,6 +351,7 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
 
     // Build HID packets. Each carries up to 61 bytes of command payload.
     string allPackets;
+    allPackets.reserve(((cmd.size() + HID_MAX_PAYLOAD_SIZE - 1) / HID_MAX_PAYLOAD_SIZE) * HID_PACKET_SIZE);
     int i = 0;
     do {
         const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), static_cast<int>(HID_MAX_PAYLOAD_SIZE));

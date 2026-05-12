@@ -5,6 +5,7 @@
 // SMX_SetLights2 internally.
 
 #include "SMX.h"
+#include "SMXProtocolConstants.h"
 
 #include <algorithm>
 #include <atomic>
@@ -268,6 +269,7 @@ double g_fStopAnimatingUntil = 0;
 void AnimationThreadMain()
 {
     const int iFrameMs = 33; // ~30 FPS
+    vector<char> lightData(2 * BYTES_PER_PAD_25, 0); // Reused each frame, max possible size
 
     while(!g_bAnimShutdown.load(memory_order_relaxed))
     {
@@ -294,7 +296,7 @@ void AnimationThreadMain()
 
         const int iBytesPerPanel = iLedsPerPanel * 3;
         const int iBytesPerPad = 9 * iBytesPerPanel;
-        vector<char> lightData(2 * iBytesPerPad, 0);
+        memset(lightData.data(), 0, 2 * iBytesPerPad);
 
         {
             lock_guard<mutex> lock(g_AnimMutex);
@@ -469,7 +471,7 @@ void SMXLightsAnimation_TemporaryStop()
     if(g_bAnimThreadSending.load(memory_order_relaxed))
         return;
     if(g_bAutoAnimating.load(memory_order_relaxed))
-        g_fStopAnimatingUntil = SMX::GetMonotonicTime() + 0.1; // 100ms
+        g_fStopAnimatingUntil = SMX::GetMonotonicTime() + ANIMATION_PAUSE_DURATION;
 }
 
 // ---------------------------------------------------------------------------
@@ -693,10 +695,10 @@ SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, 
         for(int f = 0; f < (int)panelFrames[panel].size(); f++)
             PackGraphic(panelFrames[panel][f], palette, allPanelData[panel].graphics[firstGraphic + f]);
 
-        // Apply 0.6666 color scaling to palette (same as SetLights).
+        // Apply color scaling to palette (same as SetLights).
         for(auto &color : palette.colors)
             for(int c = 0; c < 3; c++)
-                color.rgb[c] = uint8_t(color.rgb[c] * 0.6666f);
+                color.rgb[c] = uint8_t(color.rgb[c] * LED_COLOR_SCALE);
     }
 
     // Build master timing data.

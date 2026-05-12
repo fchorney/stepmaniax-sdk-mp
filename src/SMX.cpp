@@ -8,6 +8,7 @@
 
 #include "SMXHelpers.h"
 #include "SMXManager.h"
+#include "SMXProtocolConstants.h"
 
 #include "SMXVersion.h"
 
@@ -15,7 +16,7 @@ using namespace std;
 using namespace SMX;
 
 // File-static singleton. No global variable visible outside this file.
-static shared_ptr<SMXManager> g_pSMX;
+static unique_ptr<SMXManager> g_pSMX;
 
 // Declared in SMXPanelAnimation.cpp
 void SMXLightsAnimation_TemporaryStop();
@@ -35,7 +36,7 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
     };
-    g_pSMX = make_shared<SMXManager>(cb);
+    g_pSMX = make_unique<SMXManager>(cb);
 }
 
 SMX_API void SMX_Stop()
@@ -107,22 +108,20 @@ SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
     if(!g_pSMX || !lightData) return;
 
     string lights[2];
-    const int BytesPerPad16 = 9*16*3;
-    const int BytesPerPad25 = 9*25*3;
-    if(lightDataSize == 2*BytesPerPad16)
+    if(lightDataSize == 2*BYTES_PER_PAD_16)
     {
-        lights[0] = string(lightData, BytesPerPad16);
-        lights[1] = string(lightData + BytesPerPad16, BytesPerPad16);
+        lights[0] = string(lightData, BYTES_PER_PAD_16);
+        lights[1] = string(lightData + BYTES_PER_PAD_16, BYTES_PER_PAD_16);
     }
-    else if(lightDataSize == 2*BytesPerPad25)
+    else if(lightDataSize == 2*BYTES_PER_PAD_25)
     {
-        lights[0] = string(lightData, BytesPerPad25);
-        lights[1] = string(lightData + BytesPerPad25, BytesPerPad25);
+        lights[0] = string(lightData, BYTES_PER_PAD_25);
+        lights[1] = string(lightData + BYTES_PER_PAD_25, BYTES_PER_PAD_25);
     }
     else
     {
         Log(ssprintf("SMX_SetLights2: lightDataSize must be %i or %i, got %i",
-            2*BytesPerPad16, 2*BytesPerPad25, lightDataSize));
+            2*BYTES_PER_PAD_16, 2*BYTES_PER_PAD_25, lightDataSize));
         return;
     }
 
@@ -206,5 +205,5 @@ void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser, std::uniqu
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
         callback(pad, reason, pUser);
     };
-    g_pSMX = make_shared<SMXManager>(cb, std::move(pEnumerator));
+    g_pSMX = make_unique<SMXManager>(cb, std::move(pEnumerator));
 }

@@ -3,6 +3,7 @@
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 #include "SMXHIDRecorder.h"
+#include "SMXProtocolConstants.h"
 
 #include <chrono>
 #include <cstring>
