@@ -440,7 +440,7 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 SMX_API void SMX_SetInputStateMode(bool bAlwaysFire);
 
 /// Returns the SDK version string.
-/// @return C-string containing the version (e.g., "0.2.1").
+/// @return C-string containing the version (e.g., "1.0.0").
 SMX_API const char *SMX_Version();
 
 /// Returns the elapsed time in seconds since the SDK was initialized.

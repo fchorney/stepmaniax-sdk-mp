@@ -27,6 +27,6 @@ if [ "$OLD" = "$NEW" ]; then
 fi
 
 sed -i "s/VERSION $OLD/VERSION $NEW/" CMakeLists.txt
-sed -i "s/$OLD/$NEW/g" README.md include/SMX.h src/SMX.cpp
+sed -i "s/$OLD/$NEW/g" include/SMX.h
 
 echo "$OLD -> $NEW"
