@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 #include "SMXDeviceConnection.h"
 #include "SMXHelpers.h"
+#include "SMXHIDRecorder.h"
 #include "SMXProtocolConstants.h"
 
 using namespace std;
@@ -14,7 +16,16 @@ using namespace std;
 namespace SMX {
 
 SMXManager::SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callback):
-    SMXManager(callback, CreateHIDAPIEnumerator())
+    SMXManager(callback, []() -> unique_ptr<IHIDEnumerator> {
+        auto pEnumerator = CreateHIDAPIEnumerator();
+        const char *pCaptureDir = getenv("SMX_CAPTURE_DIR");
+        if(pCaptureDir && pCaptureDir[0] != '\0')
+        {
+            Log("Recording HID traffic to: " + string(pCaptureDir));
+            return unique_ptr<IHIDEnumerator>(new RecordingHIDEnumerator(std::move(pEnumerator), pCaptureDir, true));
+        }
+        return pEnumerator;
+    }())
 {
 }
 

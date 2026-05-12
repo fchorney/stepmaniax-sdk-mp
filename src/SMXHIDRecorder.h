@@ -57,7 +57,8 @@ private:
 class RecordingHIDEnumerator : public IHIDEnumerator
 {
 public:
-    RecordingHIDEnumerator(std::unique_ptr<IHIDEnumerator> pEnumerator, const std::string &sOutputDir);
+    RecordingHIDEnumerator(std::unique_ptr<IHIDEnumerator> pEnumerator, const std::string &sOutputDir,
+                           bool bTimestampSubdir = false);
 
     void Init() override;
     void Exit() override;

@@ -639,11 +639,11 @@ When filing an issue, please include:
 For hardware-related issues, recording a HID traffic capture is extremely helpful:
 
 ```bash
-SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
+SMX_CAPTURE_DIR=/tmp/captures ./your-application
 # Then attach the .smxhid files from /tmp/captures/ to the issue
 ```
 
-Note: HID traffic recording is currently only available via the integration test binary (`smx-integration-tests`). It is not built into the shared library.
+Note: HID traffic recording is built into the shared library. Set the `SMX_CAPTURE_DIR` environment variable before launching any application using the SDK and it will automatically record all HID traffic to timestamped `.smxhid` files in that directory.
 
 ## Future Projects
 

@@ -71,6 +71,7 @@ add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
     src/SMXHIDInterface.cpp
+    src/SMXHIDRecorder.cpp
     src/SMXHelpers.cpp
     src/SMXDevice.cpp
     src/SMXManager.cpp

@@ -115,9 +115,15 @@ Shared test helpers (fake devices, packet builders, utility functions) that serv
 
 The `SMXHIDRecorder` module (`src/SMXHIDRecorder.h/.cpp`) provides:
 
-- **RecordingHIDDevice / RecordingHIDEnumerator** — decorator wrappers that log all HID reads/writes with timestamps to binary `.smxhid` capture files. Used during integration tests to capture real device traffic.
+- **RecordingHIDDevice / RecordingHIDEnumerator** — decorator wrappers that log all HID reads/writes with timestamps to binary `.smxhid` capture files.
 - **ReplayHIDDevice** — loads a `.smxhid` capture file and replays reads in order, allowing regression tests to run against real recorded traffic without hardware.
 - **Binary format:** `"SMXHID\x01"` magic header + records of `[type:1][timestamp_us:8][size:2][data:size]`.
+
+Recording is built into the shared library. Set the `SMX_CAPTURE_DIR` environment variable before launching any application using the SDK to automatically record all HID traffic:
+
+```bash
+SMX_CAPTURE_DIR=/tmp/captures ./your-application
+```
 
 ### Integration tests (real hardware)
 

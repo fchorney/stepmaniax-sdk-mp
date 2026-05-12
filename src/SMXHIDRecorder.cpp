@@ -1,7 +1,9 @@
 #include "SMXHIDRecorder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -95,11 +97,20 @@ void RecordingHIDDevice::WriteRecord(char cType, const uint8_t *buf, size_t len)
 
 // --- RecordingHIDEnumerator ---
 
-RecordingHIDEnumerator::RecordingHIDEnumerator(unique_ptr<IHIDEnumerator> pEnumerator, const string &sOutputDir)
+RecordingHIDEnumerator::RecordingHIDEnumerator(unique_ptr<IHIDEnumerator> pEnumerator, const string &sOutputDir,
+                                               bool bTimestampSubdir)
     : m_pEnumerator(std::move(pEnumerator))
     , m_sOutputDir(sOutputDir)
 {
-    CreateDirectoryRecursive(sOutputDir);
+    if(bTimestampSubdir)
+    {
+        auto now = chrono::system_clock::to_time_t(chrono::system_clock::now());
+        char buf[32];
+        strftime(buf, sizeof(buf), "%Y-%m-%d_%H-%M-%S", localtime(&now));
+        m_sOutputDir += "/";
+        m_sOutputDir += buf;
+    }
+    CreateDirectoryRecursive(m_sOutputDir);
 }
 
 void RecordingHIDEnumerator::Init() { m_pEnumerator->Init(); }
