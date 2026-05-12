@@ -1270,6 +1270,9 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
 /// IMPORTANT: This must not be called from within an update callback.
 SMX_API void SMX_Stop()
 {
+    // Stop the animation thread before destroying the manager, since the
+    // animation thread calls SMX_SetLights2 which uses the manager.
+    SMX_LightsAnimation_SetAuto(false);
     g_pSMX.reset();
 }
 
