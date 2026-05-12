@@ -203,13 +203,15 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 
         bool bMasterIsV4 = false;
         bool bAnyConnected = false;
+        SMXConfig configs[2];
+        bool bHasConfig[2] = {false, false};
         for(int iPad = 0; iPad < 2; ++iPad)
         {
-            SMXConfig config;
-            if(!m_Devices[iPad].GetConfig(config))
+            if(!m_Devices[iPad].GetConfig(configs[iPad]))
                 continue;
+            bHasConfig[iPad] = true;
             bAnyConnected = true;
-            if(config.masterVersion >= 4)
+            if(configs[iPad].masterVersion >= 4)
                 bMasterIsV4 = true;
         }
 
@@ -230,28 +232,47 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
         m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[0], {"", ""}});
         m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[1], {"", ""}});
         m_aPendingLightsCommands.push_back(PendingLightsCommand{fCommandTimes[2], {"", ""}});
+
+        // Fill in the last 3 pending commands with the new data.
+        for(int iPad = 0; iPad < 2; ++iPad)
+        {
+            if(sLightCommands[0][iPad].empty() || !bHasConfig[iPad])
+                continue;
+
+            size_t iBase = m_aPendingLightsCommands.size() - 3;
+
+            // Command '4' (inner grid) is only sent on firmware v4+.
+            if(configs[iPad].masterVersion >= 4)
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = sLightCommands[0][iPad];
+            else
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = "";
+
+            m_aPendingLightsCommands[iBase + 1].sPadCommand[iPad] = sLightCommands[1][iPad];
+            m_aPendingLightsCommands[iBase + 2].sPadCommand[iPad] = sLightCommands[2][iPad];
+        }
     }
-
-    // Fill in (or replace) the last 3 pending commands with the new data.
-    for(int iPad = 0; iPad < 2; ++iPad)
+    else
     {
-        if(sLightCommands[0][iPad].empty())
-            continue;
+        // Replace data in the last 3 pending commands.
+        for(int iPad = 0; iPad < 2; ++iPad)
+        {
+            if(sLightCommands[0][iPad].empty())
+                continue;
 
-        SMXConfig config;
-        if(!m_Devices[iPad].GetConfig(config))
-            continue;
+            SMXConfig config;
+            if(!m_Devices[iPad].GetConfig(config))
+                continue;
 
-        size_t iBase = m_aPendingLightsCommands.size() - 3;
+            size_t iBase = m_aPendingLightsCommands.size() - 3;
 
-        // Command '4' (inner grid) is only sent on firmware v4+.
-        if(config.masterVersion >= 4)
-            m_aPendingLightsCommands[iBase].sPadCommand[iPad] = sLightCommands[0][iPad];
-        else
-            m_aPendingLightsCommands[iBase].sPadCommand[iPad] = "";
+            if(config.masterVersion >= 4)
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = sLightCommands[0][iPad];
+            else
+                m_aPendingLightsCommands[iBase].sPadCommand[iPad] = "";
 
-        m_aPendingLightsCommands[iBase + 1].sPadCommand[iPad] = sLightCommands[1][iPad];
-        m_aPendingLightsCommands[iBase + 2].sPadCommand[iPad] = sLightCommands[2][iPad];
+            m_aPendingLightsCommands[iBase + 1].sPadCommand[iPad] = sLightCommands[1][iPad];
+            m_aPendingLightsCommands[iBase + 2].sPadCommand[iPad] = sLightCommands[2][iPad];
+        }
     }
 
     // Wake the main thread to send the commands.
@@ -418,8 +439,11 @@ void SMXManager::AttemptConnections()
         return;
     m_fLastEnumerationTime = fNow;
 
-    // Enumerate SMX devices via the HID enumerator.
+    // Release the lock during the enumeration syscall so the USB polling thread
+    // and API callers aren't blocked by a potentially slow HID enumeration.
+    m_Lock.unlock();
     auto devs = m_pEnumerator->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    m_Lock.lock();
     for(const auto &dev : devs)
     {
         if(dev.sProduct != SMX_USB_PRODUCT_STRING)

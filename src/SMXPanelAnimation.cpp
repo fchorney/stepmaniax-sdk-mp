@@ -284,6 +284,9 @@ void AnimationThreadMain()
 
         // Build lights data for both pads.
         int iLedsPerPanel = 25;
+        int iBytesPerPanel;
+        int iBytesPerPad;
+
         {
             lock_guard<mutex> lock(g_AnimMutex);
 
@@ -292,14 +295,10 @@ void AnimationThreadMain()
                 for(int type = 0; type < 2; type++)
                     if(!g_Animations[pad][type].durations.empty())
                         iLedsPerPanel = g_Animations[pad][type].numLeds;
-        }
 
-        const int iBytesPerPanel = iLedsPerPanel * 3;
-        const int iBytesPerPad = 9 * iBytesPerPanel;
-        memset(lightData.data(), 0, 2 * iBytesPerPad);
-
-        {
-            lock_guard<mutex> lock(g_AnimMutex);
+            iBytesPerPanel = iLedsPerPanel * 3;
+            iBytesPerPad = 9 * iBytesPerPanel;
+            memset(lightData.data(), 0, 2 * iBytesPerPad);
 
             for(int pad = 0; pad < 2; pad++)
             {

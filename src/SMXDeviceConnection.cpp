@@ -186,24 +186,31 @@ void SMXDeviceConnection::CheckReads()
     }
 
     // Consume Report 6 packets from m_sReport6Buffer (populated by USB polling thread).
-    // Process fragmented packets and queue complete ones for reading.
+    // Swap the buffer out under the lock so the USB polling thread isn't blocked
+    // during packet processing.
+    string localBuffer;
     {
         lock_guard<mutex> lock(m_Report6BufferMutex);
+        localBuffer.swap(m_sReport6Buffer);
+    }
 
-        // Parse complete packets from the Report 6 buffer.
-        // PollUSBData guarantees only complete packets are appended.
-        size_t processedBytes = 0;
-        while(processedBytes + 3 <= m_sReport6Buffer.size())
-        {
-            const size_t packetLen = 3 + static_cast<uint8_t>(m_sReport6Buffer[processedBytes + 2]);
+    // Process fragmented packets and queue complete ones for reading.
+    size_t processedBytes = 0;
+    while(processedBytes + 3 <= localBuffer.size())
+    {
+        const size_t packetLen = 3 + static_cast<uint8_t>(localBuffer[processedBytes + 2]);
 
-            string sPacket = m_sReport6Buffer.substr(processedBytes, packetLen);
-            HandleUsbPacket(sPacket);
-            processedBytes += packetLen;
-        }
+        string sPacket = localBuffer.substr(processedBytes, packetLen);
+        HandleUsbPacket(sPacket);
+        processedBytes += packetLen;
+    }
 
-        if(processedBytes > 0)
-            m_sReport6Buffer.erase(0, processedBytes);
+    // If there's a partial packet remaining (shouldn't happen normally),
+    // put it back for next time.
+    if(processedBytes < localBuffer.size())
+    {
+        lock_guard<mutex> lock(m_Report6BufferMutex);
+        m_sReport6Buffer.insert(0, localBuffer.data() + processedBytes, localBuffer.size() - processedBytes);
     }
 }
 
