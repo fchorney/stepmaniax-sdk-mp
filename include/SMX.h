@@ -274,6 +274,43 @@ SMX_API void SMX_ForceRecalibration(int pad);
 /// without waiting for the timeout period to elapse.
 SMX_API void SMX_ReenableAutoLights();
 
+/// Update panel LEDs on both pads. Both pads are always updated together.
+///
+/// lightData is a flat array of 8-bit RGB colors, one for each LED on each panel.
+/// lightDataSize must be either:
+///   - 1350 bytes: 2 pads × 9 panels × 25 LEDs × 3 RGB (firmware v4+ with inner 3×3 grid)
+///   - 864 bytes:  2 pads × 9 panels × 16 LEDs × 3 RGB (legacy 4×4-only layout)
+///
+/// Each panel has LEDs in the following order (25-LED mode):
+///
+///   00  01  02  03      (outer 4×4 grid, rows 0-1)
+///      16  17  18       (inner 3×3 grid, row 0)
+///   04  05  06  07      (outer 4×4 grid, rows 2-3)
+///      19  20  21       (inner 3×3 grid, row 1)
+///   08  09  10  11      (outer 4×4 grid, rows 4-5)
+///      22  23  24       (inner 3×3 grid, row 2)
+///   12  13  14  15      (outer 4×4 grid, rows 6-7)
+///
+/// Panels are ordered left-to-right, top-to-bottom for each pad:
+///   Pad 0: panels 0-8, Pad 1: panels 9-17
+///
+/// Lights update at up to 30 FPS. Faster calls replace pending data without increasing
+/// the update rate. Panels return to automatic lighting if no updates are received for
+/// a few seconds, so applications should send updates continuously.
+///
+/// A 0.6666 color scaling factor is applied to all values before sending (values above
+/// ~170 don't make LEDs brighter; this improves contrast and reduces power draw).
+///
+/// @param lightData Pointer to the RGB light data buffer.
+/// @param lightDataSize Size of the buffer in bytes (must be 1350 or 864).
+SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize);
+
+/// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).
+/// Use SMX_SetLights2 instead for 25-LED panel support.
+///
+/// @param lightData Pointer to 864 bytes of RGB data (2 pads × 9 panels × 16 LEDs × 3).
+SMX_API void SMX_SetLights(const char lightData[864]);
+
 /// Sets the platform edge LED strip colors for both pads.
 /// The input buffer contains 88 RGB triplets (264 bytes total): the first 44 LEDs
 /// (132 bytes) are for pad 0, the second 44 LEDs (132 bytes) are for pad 1.

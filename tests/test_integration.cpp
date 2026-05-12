@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -660,6 +661,133 @@ TEST_CASE("Real hardware: sensor test mode all modes")
 
         SMX_SetTestMode(iPad, SensorTestMode_Off);
         this_thread::sleep_for(chrono::milliseconds(200));
+    }
+
+    SMX_Stop();
+}
+
+TEST_CASE("Real hardware: panel lights rainbow sweep at 30 FPS")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/panel_lights";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    int iExpected = static_cast<int>(devices.size());
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000));
+
+    MESSAGE("Connected ", iConnected.load(), " pad(s), running 3-second rainbow sweep");
+
+    // HSV to RGB helper (hue 0-360, returns r/g/b 0-255)
+    auto hsvToRgb = [](float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b) {
+        float c = v * s;
+        float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+        float m = v - c;
+        float rf = 0, gf = 0, bf = 0;
+        if(h < 60)       { rf = c; gf = x; }
+        else if(h < 120) { rf = x; gf = c; }
+        else if(h < 180) { gf = c; bf = x; }
+        else if(h < 240) { gf = x; bf = c; }
+        else if(h < 300) { rf = x; bf = c; }
+        else             { rf = c; bf = x; }
+        r = uint8_t((rf + m) * 255.0f);
+        g = uint8_t((gf + m) * 255.0f);
+        b = uint8_t((bf + m) * 255.0f);
+    };
+
+    // Run a rainbow sweep across all panels for 3 seconds at 30 FPS.
+    // Each panel gets a different hue offset so the rainbow "moves" across the pad.
+    const int iDurationMs = 3000;
+    const int iFrameMs = 33; // ~30 FPS
+    const int iLedsPerPanel = 25;
+    const int iTotalBytes = 2 * 9 * iLedsPerPanel * 3; // 1350
+
+    auto tStart = chrono::steady_clock::now();
+    int iFrameCount = 0;
+
+    while(true)
+    {
+        auto tNow = chrono::steady_clock::now();
+        int iElapsedMs = static_cast<int>(
+            chrono::duration_cast<chrono::milliseconds>(tNow - tStart).count());
+        if(iElapsedMs >= iDurationMs)
+            break;
+
+        float fProgress = static_cast<float>(iElapsedMs) / iDurationMs; // 0.0 to 1.0
+
+        vector<char> lightData(iTotalBytes, 0);
+        for(int iPad = 0; iPad < 2; iPad++)
+        {
+            for(int iPanel = 0; iPanel < 9; iPanel++)
+            {
+                // Each panel gets a hue offset based on its position + time
+                float fBaseHue = fmodf(fProgress * 360.0f + iPanel * 40.0f + iPad * 180.0f, 360.0f);
+
+                for(int iLed = 0; iLed < iLedsPerPanel; iLed++)
+                {
+                    // Slight hue variation per LED within a panel
+                    float fHue = fmodf(fBaseHue + iLed * 2.0f, 360.0f);
+                    uint8_t r, g, b;
+                    hsvToRgb(fHue, 1.0f, 1.0f, r, g, b);
+
+                    int iOffset = (iPad * 9 * iLedsPerPanel + iPanel * iLedsPerPanel + iLed) * 3;
+                    lightData[iOffset + 0] = static_cast<char>(r);
+                    lightData[iOffset + 1] = static_cast<char>(g);
+                    lightData[iOffset + 2] = static_cast<char>(b);
+                }
+            }
+        }
+
+        SMX_SetLights2(lightData.data(), iTotalBytes);
+        iFrameCount++;
+
+        // Sleep to maintain ~30 FPS
+        auto tFrameEnd = tNow + chrono::milliseconds(iFrameMs);
+        this_thread::sleep_until(tFrameEnd);
+    }
+
+    MESSAGE("Sent ", iFrameCount, " frames in 3 seconds (~", iFrameCount / 3, " FPS)");
+    CHECK(iFrameCount >= 80); // Should be ~90 frames at 30 FPS
+
+    // Re-enable auto lights to restore normal behavior
+    SMX_ReenableAutoLights();
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    // Verify still connected
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after lights test");
     }
 
     SMX_Stop();

@@ -133,6 +133,7 @@ if(BUILD_TESTS)
         tests/test_helpers.cpp
         tests/test_move_semantics.cpp
         tests/test_replay.cpp
+        tests/test_lights.cpp
         src/SMXConfigPacket.cpp
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
