@@ -184,6 +184,7 @@ All application-level commands follow the same pattern: the host sends a command
 | Panel Lights (inner) | `'4'` + RGB data + `'\n'` | Host → Device | Inner 3×3 grid LEDs (fw v4+) |
 | Panel Lights (top) | `'2'` + RGB data + `'\n'` | Host → Device | Top 2 rows of 4×4 grid |
 | Panel Lights (bottom) | `'3'` + RGB data + `'\n'` | Host → Device | Bottom 2 rows of 4×4 grid |
+| Lights Off (legacy) | `'l'` + 108 zeros + `'\n'` | Host → Device | Clear all panel LEDs |
 | Platform Lights | `'L'` + strip + count + RGB | Host → Device | Set LED strip colors |
 | Panel Test Mode | `'t'` + `' '` + mode + `'\n'` | Host → Device | Diagnostic lighting |
 | Sensor Test Request | `'y'` + mode + `'\n'` | Host → Device | Request sensor data |
@@ -276,6 +277,16 @@ Outer 4×4:          Inner 3×3:
 **Auto-lighting:** Panels return to automatic step lighting if no lights commands are received for a few seconds (controlled by `autoLightsTimeout` in config). Applications should send updates continuously, even if colors aren't changing.
 
 **Panel test mode interaction:** Lights commands are silently dropped while a panel test mode is active.
+
+### Lights Off (Legacy)
+
+```
+Byte 0: 'l'
+Bytes 1-108: zeros (9 panels × 4 LEDs × 3 RGB)
+Byte 109: '\n'
+```
+
+The `'l'` command is a legacy lights command that predates the `'2'`/`'3'`/`'4'` split. It is only used to blank all panel LEDs (e.g., before entering panel test mode). The 108 zero bytes is the minimum payload the firmware expects for this command to be valid.
 
 ### Platform LED Strip
 

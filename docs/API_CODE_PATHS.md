@@ -456,6 +456,56 @@ SMX_Version()        → returns SMX_VERSION string constant
 SMX_GetMonotonicTime() → returns chrono::steady_clock elapsed seconds since first call
 ```
 
+### SMX_LightsAnimation_Load
+
+Loads a GIF as a panel animation for one pad and animation type.
+
+```
+SMX_LightsAnimation_Load(gif, size, pad, type, error)
+│
+├─ Validate inputs (null check, pad range, type enum)
+├─ Decode GIF via gif_load (GIF_Load callback composites frames with disposal)
+├─ Validate dimensions (must be 14×15 or 23×24)
+├─ For each frame:
+│   ├─ Check loop frame marker (bottom-left pixel white → set loopFrame)
+│   ├─ Store frame duration (snap 30ms/40ms to 1/30s)
+│   └─ For each of 9 panels:
+│       └─ ExtractPanel():
+│           ├─ 14×15: sample 4×4 grid at (col*5, row*5) → 16 LEDs
+│           └─ 23×24: sample outer 4×4 at even coords + inner 3×3 at odd → 25 LEDs
+├─ Lock g_AnimMutex
+├─ Store PanelAnimationData in g_Animations[pad][type]
+└─ Reset playback state for all 9 panels
+```
+
+### SMX_LightsAnimation_SetAuto
+
+Starts or stops the animation playback thread.
+
+```
+SMX_LightsAnimation_SetAuto(enable)
+│
+├─ enable=true:
+│   ├─ If already running, return
+│   └─ Spawn AnimationThreadMain():
+│       └─ Loop at 30 FPS until shutdown:
+│           ├─ Check g_fStopAnimatingUntil (pause if SMX_SetLights2 called directly)
+│           ├─ Lock g_AnimMutex
+│           ├─ For each pad:
+│           │   ├─ Get input state (for pressed animation)
+│           │   ├─ For each panel:
+│           │   │   ├─ Render released animation frame → output buffer
+│           │   │   └─ If pressed: overlay pressed animation frame
+│           │   └─ Advance frame timing (timeInFrame += 1/30, wrap at loopFrame)
+│           ├─ Unlock
+│           ├─ Call SMX_SetLights2() (with g_bAnimThreadSending flag to skip self-pause)
+│           └─ Sleep remainder of 33ms frame
+│
+└─ enable=false:
+    ├─ Set g_bAnimShutdown = true
+    └─ Join animation thread
+```
+
 ## Device Connection Lifecycle
 
 Note: The device begins sending Report 3 (input state) immediately upon USB connection. There is no "activation" command — the `m_bActive` flag in the SDK is purely internal bookkeeping that gates when the SDK starts processing Report 6 command responses and triggers the initial config read.
