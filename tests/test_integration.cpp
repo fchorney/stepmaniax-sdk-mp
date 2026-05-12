@@ -894,6 +894,8 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
         pushByte(3);
         int totalPixels = W * H;
         // clear=8, end=9, initial code size=4 bits
+        // Emit clear code frequently to keep code size at 4 bits (avoids
+        // needing to handle LZW dictionary growth in this simple encoder).
         vector<uint8_t> lzw;
         int bits = 0, bitCount = 0, codeSize = 4;
         auto emit = [&](int code) {
@@ -902,7 +904,18 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
             while(bitCount >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bitCount -= 8; }
         };
         emit(8); // clear
-        for(int i = 0; i < totalPixels; i++) emit(f); // all pixels = color index f
+        int sinceLastClear = 0;
+        for(int i = 0; i < totalPixels; i++)
+        {
+            emit(f);
+            sinceLastClear++;
+            // Reset before dictionary grows past code size 4 (max 6 entries before needing 5 bits)
+            if(sinceLastClear >= 5)
+            {
+                emit(8); // clear — resets dictionary
+                sinceLastClear = 0;
+            }
+        }
         emit(9); // end
         if(bitCount > 0) lzw.push_back(bits & 0xFF);
 
