@@ -145,7 +145,7 @@ public:
 
     /// Retrieves the cached device information.
     /// Only valid after IsConnectedWithDeviceInfo() returns true.
-    SMXDeviceInfo GetDeviceInfo() const { return m_DeviceInfo; }
+    const SMXDeviceInfo &GetDeviceInfo() const { return m_DeviceInfo; }
 
     /// Processes I/O operations. Called once per frame from the I/O thread.
     /// Performs nonblocking reads from the HID device, writes pending commands,

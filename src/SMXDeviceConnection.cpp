@@ -358,8 +358,9 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     pCmd->m_pComplete = std::move(pComplete);
 
     // Build HID packets. Each carries up to 61 bytes of command payload.
-    string allPackets;
-    allPackets.reserve(((cmd.size() + HID_MAX_PAYLOAD_SIZE - 1) / HID_MAX_PAYLOAD_SIZE) * HID_PACKET_SIZE);
+    const size_t iNumPackets = (cmd.size() + HID_MAX_PAYLOAD_SIZE - 1) / HID_MAX_PAYLOAD_SIZE;
+    string allPackets(iNumPackets * HID_PACKET_SIZE, '\0');
+    size_t iPacketIdx = 0;
     int i = 0;
     do {
         const uint8_t iPacketSize = min(static_cast<int>(cmd.size() - i), static_cast<int>(HID_MAX_PAYLOAD_SIZE));
@@ -369,14 +370,14 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
         if(i + iPacketSize == static_cast<int>(cmd.size()))
             iFlags |= PACKET_FLAG_END_OF_COMMAND;
 
-        string sPacket(HID_PACKET_SIZE, '\0');
-        sPacket[0] = HID_REPORT_COMMAND;  // report ID
-        sPacket[1] = static_cast<char>(iFlags);
-        sPacket[2] = static_cast<char>(iPacketSize);
+        char *pPacket = &allPackets[iPacketIdx * HID_PACKET_SIZE];
+        pPacket[0] = HID_REPORT_COMMAND;
+        pPacket[1] = static_cast<char>(iFlags);
+        pPacket[2] = static_cast<char>(iPacketSize);
         if(iPacketSize > 0)
-            memcpy(&sPacket[3], cmd.data() + i, iPacketSize);
+            memcpy(pPacket + 3, cmd.data() + i, iPacketSize);
 
-        allPackets += sPacket;
+        iPacketIdx++;
         i += iPacketSize;
     } while(i < static_cast<int>(cmd.size()));
 

@@ -322,6 +322,7 @@ void SMXDevice::SendConfig()
     string sData;
     if(di.m_iFirmwareVersion >= 5)
     {
+        sData.reserve(2 + sizeof(SMXConfig));
         sData = "W";
         uint8_t iSize = sizeof(SMXConfig);
         sData.append(reinterpret_cast<char*>(&iSize), 1);
@@ -365,7 +366,10 @@ void SMXDevice::UpdateSensorTestMode()
 
     m_WaitingForSensorTestModeResponse = m_SensorTestMode;
     m_fSentSensorTestModeRequestAt = GetMonotonicTime();
-    m_Connection.SendCommand(ssprintf("y%c\n", m_SensorTestMode));
+    string sCmd = "y";
+    sCmd.push_back(static_cast<char>(m_SensorTestMode));
+    sCmd.push_back('\n');
+    m_Connection.SendCommand(sCmd);
 }
 
 void SMXDevice::HandleSensorTestDataResponse(const string &buf)
@@ -392,6 +396,7 @@ void SMXDevice::HandleSensorTestDataResponse(const string &buf)
 
     // Parse interleaved uint16_t data.
     vector<uint16_t> data;
+    data.reserve(iSize);
     for(int i = 3; i < iSize * 2 + 3; i += 2)
     {
         uint16_t iValue = static_cast<uint8_t>(buf[i]) |

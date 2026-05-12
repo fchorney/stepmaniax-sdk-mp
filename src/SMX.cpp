@@ -21,6 +21,15 @@ static unique_ptr<SMXManager> g_pSMX;
 // Declared in SMXPanelAnimation.cpp
 void SMXLightsAnimation_TemporaryStop();
 
+// Internal variant of SMX_SetLights2 that skips TemporaryStop (used by animation thread).
+void SMX_SetLights2_Internal(const char *lightData, int lightDataSize)
+{
+    if(!g_pSMX || !lightData) return;
+    if(lightDataSize != 2*BYTES_PER_PAD_16 && lightDataSize != 2*BYTES_PER_PAD_25)
+        return;
+    g_pSMX->SetLights(lightData, lightDataSize);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

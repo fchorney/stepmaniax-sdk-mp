@@ -69,7 +69,9 @@ void SMXManager::SetSerialNumbers()
     lock_guard<recursive_mutex> lock(m_Lock);
     for(auto &device : m_Devices)
     {
-        string sData = "s";
+        string sData;
+        sData.reserve(1 + SERIAL_SIZE + 1);
+        sData = "s";
         uint8_t serial[SERIAL_SIZE];
         GenerateSerial(serial);
         sData.append(reinterpret_cast<char*>(serial), sizeof(serial));
@@ -106,6 +108,7 @@ void SMXManager::SetPlatformLights(const char *pLightData)
             continue;
 
         string sCmd;
+        sCmd.reserve(3 + PLATFORM_STRIP_LEDS * 3);
         sCmd.push_back('L');
         sCmd.push_back(0);   // strip index
         sCmd.push_back(PLATFORM_STRIP_LEDS);
@@ -429,7 +432,12 @@ void SMXManager::UpdatePanelTestMode()
     m_fLastPanelTestModeSentAt = GetMonotonicTime();
     m_LastSentPanelTestMode = m_PanelTestMode;
     for(auto &device : m_Devices)
-        device.SendCommand(ssprintf("t %c\n", m_PanelTestMode));
+    {
+        string sCmd = "t ";
+        sCmd.push_back(static_cast<char>(m_PanelTestMode));
+        sCmd.push_back('\n');
+        device.SendCommand(sCmd);
+    }
 }
 
 void SMXManager::AttemptConnections()

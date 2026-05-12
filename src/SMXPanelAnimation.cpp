@@ -40,6 +40,9 @@ using namespace std;
 // Declared in SMXHelpers.h
 namespace SMX { double GetMonotonicTime(); }
 
+// Declared in SMX.cpp — skips TemporaryStop (for use by animation thread only).
+void SMX_SetLights2_Internal(const char *lightData, int lightDataSize);
+
 namespace {
 
 // --- GIF Decoding ---
@@ -71,8 +74,9 @@ void GifFrameCallback(void *data, struct GIF_WHDR *whdr)
         state->canvas.assign(whdr->xdim * whdr->ydim * 4, 0);
     }
 
-    // Save canvas for GIF_PREV disposal.
-    state->prevCanvas = state->canvas;
+    // Save canvas for GIF_PREV disposal (only when needed).
+    if(whdr->mode == GIF_PREV)
+        state->prevCanvas = state->canvas;
 
     // Render this frame's pixels onto the canvas.
     int frxd = whdr->frxd, fryd = whdr->fryd;
@@ -259,7 +263,6 @@ mutex g_AnimMutex;
 PanelAnimationData g_Animations[2][2]; // [pad][type]
 AnimationPlaybackState g_PlaybackState[2][2][9]; // [pad][type][panel]
 atomic<bool> g_bAutoAnimating{false};
-atomic<bool> g_bAnimThreadSending{false}; // true while animation thread is calling SetLights2
 thread g_AnimThread;
 atomic<bool> g_bAnimShutdown{false};
 double g_fStopAnimatingUntil = 0;
@@ -375,11 +378,9 @@ void AnimationThreadMain()
             }
         }
 
-        // Send lights. Set flag so TemporaryStop knows not to pause us.
+        // Send lights directly without triggering TemporaryStop on ourselves.
         int totalSize = iLedsPerPanel == 25 ? 1350 : 864;
-        g_bAnimThreadSending.store(true, memory_order_relaxed);
-        SMX_SetLights2(lightData.data(), totalSize);
-        g_bAnimThreadSending.store(false, memory_order_relaxed);
+        SMX_SetLights2_Internal(lightData.data(), totalSize);
 
         // Sleep for remainder of frame.
         auto tFrameEnd = tFrameStart + chrono::milliseconds(iFrameMs);
@@ -466,9 +467,6 @@ SMX_API void SMX_LightsAnimation_SetAuto(bool enable)
 // Called from SMX_SetLights2 to temporarily pause animation.
 void SMXLightsAnimation_TemporaryStop()
 {
-    // Don't pause if the animation thread itself is sending lights.
-    if(g_bAnimThreadSending.load(memory_order_relaxed))
-        return;
     if(g_bAutoAnimating.load(memory_order_relaxed))
         g_fStopAnimatingUntil = SMX::GetMonotonicTime() + ANIMATION_PAUSE_DURATION;
 }
