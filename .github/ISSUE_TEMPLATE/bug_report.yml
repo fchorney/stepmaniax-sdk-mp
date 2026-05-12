@@ -1,5 +1,6 @@
 name: Bug Report
 description: Report a bug or unexpected behavior
+title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
@@ -36,7 +37,7 @@ body:
     id: firmware
     attributes:
       label: SMX pad firmware version
-      description: Printed by the SDK on connection (e.g. "Master version: 5")
+      description: 'Printed by the SDK on connection (e.g. "Master version: 5")'
       placeholder: e.g. 5
     validations:
       required: false
