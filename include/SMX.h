@@ -507,8 +507,9 @@ typedef void SMX_LightsUploadCallback(int progress, void *pUser);
 /// (25-LED mode, the only format supported for firmware upload).
 ///
 /// Both animation types (released and pressed) should be prepared before calling
-/// BeginUpload. Each call to PrepareUpload replaces any previously prepared data
-/// for that pad/type combination.
+/// BeginUpload. Each call to PrepareUpload appends to the upload command queue
+/// for that pad, so you can prepare both types before a single BeginUpload call.
+/// BeginUpload clears the queue after consuming it.
 ///
 /// @param gif Pointer to raw GIF file data.
 /// @param size Size of the GIF data in bytes.

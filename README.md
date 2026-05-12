@@ -399,6 +399,8 @@ void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, vo
 
 `SMX_LightsAnimation_Load` accepts animated GIF files in a specific layout. The GIF encodes a 3×3 grid of panels with 1-pixel gutters between them.
 
+`SMX_LightsUpload_PrepareUpload` accepts the same format but only supports 23×24 GIFs (25-LED mode) with a maximum of 32 frames per animation type. Each panel is limited to 15 unique colors.
+
 ### Supported dimensions
 
 | GIF size | LED mode | Panel region | Notes |
@@ -567,6 +569,10 @@ This abstraction exists for two reasons:
 1. **Testability.** Tests inject a `FakeHIDDevice` that queues pre-built packets and captures writes, allowing full testing of packet parsing, state management, and connection logic without physical hardware.
 
 2. **Replaceability.** If hidapi is ever swapped for a different HID library (or a platform-specific implementation), only `SMXHIDInterface.cpp` needs to change. The rest of the codebase is decoupled from the concrete HID library.
+
+## Future projects
+
+- **GIF animation editor** — A GUI tool for creating and previewing GIF animations that conform to the SMX panel format (correct dimensions, panel grid layout, color limits, loop frame markers). Would allow visual editing of per-panel animations with real-time preview on connected pads.
 
 ## Acknowledgments
 

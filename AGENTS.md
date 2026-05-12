@@ -4,7 +4,7 @@
 
 This is a cross-platform SDK for StepManiaX dance pads, based on the [original StepManiaX SDK](https://github.com/steprevolution/stepmaniax-sdk). The original SDK is included as a git submodule at `original_sdk/` for reference.
 
-The goal is to eventually implement all features from the original SDK, but with a fundamentally different architecture optimized for input latency. Input processing (Report 3 packets) is the highest priority — it must be as fast and low-latency as possible. Report 6 data (commands, config, device info) must still be processed correctly but is secondary to input responsiveness.
+The goal is to eventually implement all features from the original SDK, but with a fundamentally different architecture optimized for input latency. All features from the original SDK have been implemented. Input processing (Report 3 packets) is the highest priority — it must be as fast and low-latency as possible. Report 6 data (commands, config, device info) must still be processed correctly but is secondary to input responsiveness.
 
 ## Architecture
 

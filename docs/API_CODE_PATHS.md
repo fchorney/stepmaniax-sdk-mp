@@ -527,7 +527,7 @@ SMX_LightsUpload_PrepareUpload(gif, size, pad, type, error)
 │   ├─ Insert delay commands (max_size × 3.4ms) between bursts
 │   ├─ Duplicate panel data for reliability
 │   └─ Append master timing packets (final_packet=1 on last)
-└─ Store command list in g_UploadCommands[pad]
+└─ Append command list to g_UploadCommands[pad]
 ```
 
 ### SMX_LightsUpload_BeginUpload
