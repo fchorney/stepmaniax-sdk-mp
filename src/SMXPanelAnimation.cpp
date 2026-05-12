@@ -241,6 +241,7 @@ mutex g_AnimMutex;
 PanelAnimationData g_Animations[2][2]; // [pad][type]
 AnimationPlaybackState g_PlaybackState[2][2][9]; // [pad][type][panel]
 atomic<bool> g_bAutoAnimating{false};
+atomic<bool> g_bAnimThreadSending{false}; // true while animation thread is calling SetLights2
 thread g_AnimThread;
 atomic<bool> g_bAnimShutdown{false};
 double g_fStopAnimatingUntil = 0;
@@ -356,9 +357,11 @@ void AnimationThreadMain()
             }
         }
 
-        // Send lights.
+        // Send lights. Set flag so TemporaryStop knows not to pause us.
         int totalSize = iLedsPerPanel == 25 ? 1350 : 864;
+        g_bAnimThreadSending.store(true, memory_order_relaxed);
         SMX_SetLights2(lightData.data(), totalSize);
+        g_bAnimThreadSending.store(false, memory_order_relaxed);
 
         // Sleep for remainder of frame.
         auto tFrameEnd = tFrameStart + chrono::milliseconds(iFrameMs);
@@ -445,6 +448,9 @@ SMX_API void SMX_LightsAnimation_SetAuto(bool enable)
 // Called from SMX_SetLights2 to temporarily pause animation.
 void SMXLightsAnimation_TemporaryStop()
 {
+    // Don't pause if the animation thread itself is sending lights.
+    if(g_bAnimThreadSending.load(memory_order_relaxed))
+        return;
     if(g_bAutoAnimating.load(memory_order_relaxed))
         g_fStopAnimatingUntil = SMX::GetMonotonicTime() + 0.1; // 100ms
 }

@@ -847,7 +847,7 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
         r = uint8_t(rf * 255); g = uint8_t(gf * 255); b = uint8_t(bf * 255);
     };
 
-    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 30ms delay.
+    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 500ms delay.
     // Each frame is a solid color across all panels.
     const int W = 23, H = 24;
     const int numFrames = 6;
@@ -881,9 +881,9 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
     // Frames
     for(int f = 0; f < numFrames; f++)
     {
-        // GCE: 30ms delay
+        // GCE: 500ms delay
         pushByte(0x21); pushByte(0xF9); pushByte(4);
-        pushByte(0); pushLE16(3); pushByte(0); pushByte(0);
+        pushByte(0); pushLE16(50); pushByte(0); pushByte(0);
 
         // Image descriptor
         pushByte(0x2C);
