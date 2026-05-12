@@ -114,7 +114,19 @@ void SMXManager::SetPlatformLights(const char *pLightData)
     }
 }
 
-void SMXManager::SetLights(const string sPanelLights[2])
+// Precomputed color scaling lookup table (avoids float multiplication on hot path).
+namespace {
+struct ColorScaleTable {
+    uint8_t v[256];
+    ColorScaleTable() {
+        for(int i = 0; i < 256; i++)
+            v[i] = static_cast<uint8_t>(i * LED_COLOR_SCALE);
+    }
+};
+static const ColorScaleTable g_ColorScale;
+} // anonymous namespace
+
+void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 {
     lock_guard<recursive_mutex> lock(m_Lock);
 
@@ -122,49 +134,57 @@ void SMXManager::SetLights(const string sPanelLights[2])
     if(m_PanelTestMode != PanelTestMode_Off)
         return;
 
+    // Determine per-pad size and validate.
+    int iBytesPerPad;
+    if(iLightDataSize == 2 * BYTES_PER_PAD_16)
+        iBytesPerPad = BYTES_PER_PAD_16;
+    else if(iLightDataSize == 2 * BYTES_PER_PAD_25)
+        iBytesPerPad = BYTES_PER_PAD_25;
+    else
+        return;
+
     // Build the 3 commands per pad: '4' (inner 3x3), '2' (top half), '3' (bottom half).
     string sLightCommands[3][2]; // [command_index][pad]
 
     for(int iPad = 0; iPad < 2; ++iPad)
     {
-        string sData = sPanelLights[iPad];
-        if(sData.empty())
-            continue;
+        const char *pPadData = pLightData + iPad * iBytesPerPad;
 
-        const int LightSize16 = BYTES_PER_PAD_16;
-        const int LightSize25 = BYTES_PER_PAD_25;
-        if(sData.size() != LightSize16 && sData.size() != LightSize25)
-        {
-            Log(ssprintf("SetLights: expected %i or %i bytes, got %i",
-                LightSize16, LightSize25, (int)sData.size()));
-            continue;
-        }
-
-        // Pad 16-LED data to 25-LED with zeros.
-        if(sData.size() == LightSize16)
-            sData.append(LightSize25 - LightSize16, '\0');
+        // Reserve known final sizes to avoid reallocations.
+        // Command '4': 1 prefix + 9 panels × 9 LEDs × 3 RGB + 1 newline = 244
+        // Command '2': 1 prefix + 9 panels × 8 LEDs × 3 RGB + 1 newline = 218
+        // Command '3': same as '2' = 218
+        sLightCommands[0][iPad].reserve(1 + NUM_PANELS * 9 * 3 + 1);
+        sLightCommands[1][iPad].reserve(1 + NUM_PANELS * 8 * 3 + 1);
+        sLightCommands[2][iPad].reserve(1 + NUM_PANELS * 8 * 3 + 1);
 
         sLightCommands[0][iPad] = "4";
         sLightCommands[1][iPad] = "2";
         sLightCommands[2][iPad] = "3";
 
         int iNextInputByte = 0;
-        for(int iPanel = 0; iPanel < 9; ++iPanel)
+        for(int iPanel = 0; iPanel < NUM_PANELS; ++iPanel)
         {
             // Outer 4x4 grid: top 2 rows → command '2', bottom 2 rows → command '3'.
             for(int iByte = 0; iByte < 4*4*3; ++iByte)
             {
-                uint8_t iColor = uint8_t(sData[iNextInputByte++]);
-                iColor = uint8_t(iColor * LED_COLOR_SCALE);
+                uint8_t iColor = g_ColorScale.v[static_cast<uint8_t>(pPadData[iNextInputByte++])];
                 int iCmd = iByte < 4*2*3 ? 1 : 2;
                 sLightCommands[iCmd][iPad].push_back(iColor);
             }
             // Inner 3x3 grid → command '4'.
-            for(int iByte = 0; iByte < 3*3*3; ++iByte)
+            if(iBytesPerPad == BYTES_PER_PAD_25)
             {
-                uint8_t iColor = uint8_t(sData[iNextInputByte++]);
-                iColor = uint8_t(iColor * LED_COLOR_SCALE);
-                sLightCommands[0][iPad].push_back(iColor);
+                for(int iByte = 0; iByte < 3*3*3; ++iByte)
+                {
+                    uint8_t iColor = g_ColorScale.v[static_cast<uint8_t>(pPadData[iNextInputByte++])];
+                    sLightCommands[0][iPad].push_back(iColor);
+                }
+            }
+            else
+            {
+                // 16-LED mode: no inner grid data, fill with zeros.
+                sLightCommands[0][iPad].append(3*3*3, '\0');
             }
         }
 

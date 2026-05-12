@@ -107,25 +107,14 @@ SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
 {
     if(!g_pSMX || !lightData) return;
 
-    string lights[2];
-    if(lightDataSize == 2*BYTES_PER_PAD_16)
-    {
-        lights[0] = string(lightData, BYTES_PER_PAD_16);
-        lights[1] = string(lightData + BYTES_PER_PAD_16, BYTES_PER_PAD_16);
-    }
-    else if(lightDataSize == 2*BYTES_PER_PAD_25)
-    {
-        lights[0] = string(lightData, BYTES_PER_PAD_25);
-        lights[1] = string(lightData + BYTES_PER_PAD_25, BYTES_PER_PAD_25);
-    }
-    else
+    if(lightDataSize != 2*BYTES_PER_PAD_16 && lightDataSize != 2*BYTES_PER_PAD_25)
     {
         Log(ssprintf("SMX_SetLights2: lightDataSize must be %i or %i, got %i",
             2*BYTES_PER_PAD_16, 2*BYTES_PER_PAD_25, lightDataSize));
         return;
     }
 
-    g_pSMX->SetLights(lights);
+    g_pSMX->SetLights(lightData, lightDataSize);
 
     // Pause auto-animation briefly so it doesn't compete with direct lights control.
     SMXLightsAnimation_TemporaryStop();

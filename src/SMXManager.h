@@ -49,8 +49,8 @@ public:
     void ReenableAutoLights();
     void SetPlatformLights(const char *pLightData);
 
-    /// Sets panel LED colors for both pads.
-    void SetLights(const std::string sPanelLights[2]);
+    /// Sets panel LED colors for both pads. Data is split per-pad internally.
+    void SetLights(const char *pLightData, int iLightDataSize);
 
     void SetPanelTestMode(PanelTestMode mode);
     void SetInputStateMode(bool bAlwaysFire);
