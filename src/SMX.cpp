@@ -1094,9 +1094,19 @@ private:
            (m_PanelTestMode == PanelTestMode_Off || GetMonotonicTime() - m_fLastPanelTestModeSentAt < 1.0))
             return;
 
-        // TODO: When transitioning from Off to active (m_LastSentPanelTestMode == PanelTestMode_Off),
-        // send a lights-off command ("l" + 108 zero bytes + "\n") to clear panels before entering
-        // test mode. This matches the original SDK behavior. Requires lighting commands to be implemented first.
+        // When transitioning from Off to active, send a lights-off command to clear
+        // panels before entering test mode. This matches the original SDK behavior.
+        // The 'l' command is a legacy lights command (predates the '2'/'3'/'4' split).
+        // The 108 zero bytes (9 panels × 4 LEDs × 3 RGB) is the minimum payload the
+        // firmware expects for this command. It's only used to blank panels now.
+        if(m_LastSentPanelTestMode == PanelTestMode_Off && m_PanelTestMode != PanelTestMode_Off)
+        {
+            string sCmd = "l";
+            sCmd.append(108, '\0');
+            sCmd.push_back('\n');
+            for(auto & m_Device : m_Devices)
+                m_Device.SendCommand(sCmd);
+        }
 
         m_fLastPanelTestModeSentAt = GetMonotonicTime();
         m_LastSentPanelTestMode = m_PanelTestMode;
@@ -1351,6 +1361,9 @@ SMX_API void SMX_ReenableAutoLights()
     if(g_pSMX) g_pSMX->ReenableAutoLights();
 }
 
+// Declared in SMXPanelAnimation.cpp
+void SMXLightsAnimation_TemporaryStop();
+
 /// Sets panel LED colors for both pads.
 SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
 {
@@ -1377,6 +1390,9 @@ SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
     }
 
     g_pSMX->SetLights(lights);
+
+    // Pause auto-animation briefly so it doesn't compete with direct lights control.
+    SMXLightsAnimation_TemporaryStop();
 }
 
 /// (Deprecated) Equivalent to SMX_SetLights2(lightData, 864).

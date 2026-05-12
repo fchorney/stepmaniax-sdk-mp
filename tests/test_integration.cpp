@@ -792,3 +792,171 @@ TEST_CASE("Real hardware: panel lights rainbow sweep at 30 FPS")
 
     SMX_Stop();
 }
+
+TEST_CASE("Real hardware: panel animation playback from GIF")
+{
+    auto pEnum = CreateHIDAPIEnumerator();
+    pEnum->Init();
+    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
+    pEnum->Exit();
+
+    if(devices.empty())
+    {
+        MESSAGE("No SMX hardware detected, skipping integration test");
+        return;
+    }
+
+    // Set up enumerator with optional recording
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+    {
+        string sSubDir = sCaptureDir + "/panel_animation";
+        MESSAGE("Recording HID traffic to: ", sSubDir);
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
+    }
+    else
+    {
+        pEnumerator = CreateHIDAPIEnumerator();
+    }
+
+    atomic<int> iConnected{0};
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                static_cast<atomic<int>*>(pUser)->fetch_add(1);
+        },
+        &iConnected, std::move(pEnumerator));
+
+    int iExpected = static_cast<int>(devices.size());
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iExpected; }, 5000));
+
+    MESSAGE("Connected ", iConnected.load(), " pad(s)");
+
+    // --- Generate a 23x24 animated GIF with a color cycle ---
+    // HSV helper
+    auto hsvToRgb = [](float h, uint8_t &r, uint8_t &g, uint8_t &b) {
+        float c = 1.0f, x = 1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f);
+        float rf = 0, gf = 0, bf = 0;
+        if(h < 60)       { rf = c; gf = x; }
+        else if(h < 120) { rf = x; gf = c; }
+        else if(h < 180) { gf = c; bf = x; }
+        else if(h < 240) { gf = x; bf = c; }
+        else if(h < 300) { rf = x; bf = c; }
+        else             { rf = c; bf = x; }
+        r = uint8_t(rf * 255); g = uint8_t(gf * 255); b = uint8_t(bf * 255);
+    };
+
+    // Build a minimal GIF89a with 6 frames (one per 60° hue step), 23x24, 30ms delay.
+    // Each frame is a solid color across all panels.
+    const int W = 23, H = 24;
+    const int numFrames = 6;
+
+    vector<uint8_t> gif;
+    auto pushByte = [&](uint8_t b) { gif.push_back(b); };
+    auto pushLE16 = [&](uint16_t v) { gif.push_back(v & 0xFF); gif.push_back(v >> 8); };
+
+    // Header + LSD
+    const char *hdr = "GIF89a";
+    gif.insert(gif.end(), hdr, hdr + 6);
+    pushLE16(W); pushLE16(H);
+    // GCT: 8 colors (3 bits), flag set
+    pushByte(0x82); // GCT flag + 3-bit color res + 8 colors (2^(2+1)=8)
+    pushByte(0); pushByte(0);
+
+    // Global Color Table: 8 entries (we'll use indices 0-5 for our 6 hues)
+    for(int i = 0; i < 8; i++)
+    {
+        uint8_t r, g, b;
+        hsvToRgb(i * 60.0f, r, g, b);
+        pushByte(r); pushByte(g); pushByte(b);
+    }
+
+    // NETSCAPE looping extension
+    pushByte(0x21); pushByte(0xFF); pushByte(11);
+    const char *ns = "NETSCAPE2.0";
+    gif.insert(gif.end(), ns, ns + 11);
+    pushByte(3); pushByte(1); pushLE16(0); pushByte(0);
+
+    // Frames
+    for(int f = 0; f < numFrames; f++)
+    {
+        // GCE: 30ms delay
+        pushByte(0x21); pushByte(0xF9); pushByte(4);
+        pushByte(0); pushLE16(3); pushByte(0); pushByte(0);
+
+        // Image descriptor
+        pushByte(0x2C);
+        pushLE16(0); pushLE16(0); pushLE16(W); pushLE16(H);
+        pushByte(0);
+
+        // LZW: min code size 3 (for 8-color palette)
+        pushByte(3);
+        int totalPixels = W * H;
+        // clear=8, end=9, initial code size=4 bits
+        vector<uint8_t> lzw;
+        int bits = 0, bitCount = 0, codeSize = 4;
+        auto emit = [&](int code) {
+            bits |= (code << bitCount);
+            bitCount += codeSize;
+            while(bitCount >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bitCount -= 8; }
+        };
+        emit(8); // clear
+        for(int i = 0; i < totalPixels; i++) emit(f); // all pixels = color index f
+        emit(9); // end
+        if(bitCount > 0) lzw.push_back(bits & 0xFF);
+
+        for(size_t i = 0; i < lzw.size(); ) {
+            size_t bs = min((size_t)255, lzw.size() - i);
+            pushByte((uint8_t)bs);
+            gif.insert(gif.end(), lzw.begin() + i, lzw.begin() + i + bs);
+            i += bs;
+        }
+        pushByte(0);
+    }
+    pushByte(0x3B); // trailer
+
+    MESSAGE("Generated ", numFrames, "-frame animated GIF (", gif.size(), " bytes)");
+
+    // --- Load and play the animation ---
+    const char *error = nullptr;
+    bool bLoaded = SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(),
+                                             0, SMX_LightsType_Released, &error);
+    REQUIRE(bLoaded);
+    MESSAGE("Loaded released animation for pad 0");
+
+    // Also load for pad 1 if connected
+    SMXInfo info1;
+    SMX_GetInfo(1, &info1);
+    if(info1.m_bConnected)
+    {
+        bLoaded = SMX_LightsAnimation_Load((const char*)gif.data(), gif.size(),
+                                            1, SMX_LightsType_Released, &error);
+        REQUIRE(bLoaded);
+        MESSAGE("Loaded released animation for pad 1");
+    }
+
+    // Enable auto-animation and let it play for 3 seconds
+    SMX_LightsAnimation_SetAuto(true);
+    MESSAGE("Auto-animation enabled, playing for 3 seconds...");
+    this_thread::sleep_for(chrono::seconds(3));
+
+    // Verify still connected
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo info;
+        SMX_GetInfo(i, &info);
+        if(info.m_bConnected)
+            MESSAGE("Pad ", i, " still connected during animation");
+    }
+
+    // Disable animation
+    SMX_LightsAnimation_SetAuto(false);
+    MESSAGE("Auto-animation disabled");
+
+    // Re-enable auto lights to restore normal behavior
+    SMX_ReenableAutoLights();
+    this_thread::sleep_for(chrono::milliseconds(500));
+
+    SMX_Stop();
+}

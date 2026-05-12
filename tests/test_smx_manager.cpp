@@ -704,12 +704,8 @@ TEST_CASE("SMX_SetPanelTestMode sends 't' command to both pads") {
     pFakeP2->ClearCapturedWrites();
     SMX_SetPanelTestMode(PanelTestMode_PressureTest);
 
-    bool bGotP1Write = WaitFor([&]() {
-        return pFakeP1->GetCapturedWriteCount() > 0;
-    });
-    REQUIRE(bGotP1Write);
-
     // Check that "t 1\n" was sent (PanelTestMode_PressureTest = '1')
+    // Note: a lights-off command is sent first, so we need to wait for the test mode command.
     auto checkTestModeCmd = [](const vector<vector<uint8_t>> &writes, char mode) {
         for(const auto &w : writes)
         {
@@ -722,6 +718,11 @@ TEST_CASE("SMX_SetPanelTestMode sends 't' command to both pads") {
         }
         return false;
     };
+
+    bool bGotP1Write = WaitFor([&]() {
+        return checkTestModeCmd(pFakeP1->GetCapturedWrites(), '1');
+    });
+    REQUIRE(bGotP1Write);
 
     CHECK(checkTestModeCmd(pFakeP1->GetCapturedWrites(), '1'));
     CHECK(checkTestModeCmd(pFakeP2->GetCapturedWrites(), '1'));

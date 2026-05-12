@@ -71,6 +71,7 @@ add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
     src/SMXHIDInterface.cpp
+    src/SMXPanelAnimation.cpp
     src/SMX.cpp
 )
 
@@ -134,10 +135,12 @@ if(BUILD_TESTS)
         tests/test_move_semantics.cpp
         tests/test_replay.cpp
         tests/test_lights.cpp
+        tests/test_panel_animation.cpp
         src/SMXConfigPacket.cpp
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )
     target_compile_definitions(smx-tests PRIVATE
@@ -167,6 +170,7 @@ if(BUILD_INTEGRATION_TESTS)
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )
     target_compile_definitions(smx-integration-tests PRIVATE SMX_EXPORTS)

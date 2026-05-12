@@ -450,6 +450,51 @@ SMX_API const char *SMX_Version();
 /// @return Elapsed time in seconds as a double (e.g., 1.234 for 1.234 seconds).
 SMX_API double SMX_GetMonotonicTime();
 
+// --- Panel Animation API ---
+
+/// Animation types for panel lighting.
+enum SMX_LightsType {
+    SMX_LightsType_Released = 0, ///< Animation while panels are released (idle)
+    SMX_LightsType_Pressed = 1,  ///< Animation while a panel is pressed
+};
+
+/// Load an animated GIF as a panel animation.
+///
+/// The GIF must be either 14×15 pixels (4×4 LED mode) or 23×24 pixels (25-LED mode),
+/// containing a 3×3 grid of panels with 1-pixel gutters between them:
+///
+///   14×15 layout (4×4 LEDs per panel):
+///     Each panel occupies a 4×4 pixel region at positions (col*5, row*5).
+///     The 1-pixel gutters between panels are ignored.
+///     Bottom row (y=14) is a flag row: if the bottom-left pixel is white,
+///     that frame marks the loop point.
+///
+///   23×24 layout (25 LEDs per panel):
+///     Each panel occupies an 8×8 pixel region at positions (col*8, row*8).
+///     The outer 4×4 grid is sampled at even coordinates (dx*2, dy*2).
+///     The inner 3×3 grid is sampled at odd coordinates (dx*2+1, dy*2+1).
+///     Bottom row (y=23) is a flag row for loop point marking.
+///
+/// @param gif Pointer to raw GIF file data.
+/// @param size Size of the GIF data in bytes.
+/// @param pad Pad index (0 or 1).
+/// @param type Which animation slot to load into (released or pressed).
+/// @param error [out] On failure, set to a static error string. Valid until next call.
+/// @return True on success, false on error (check *error for details).
+SMX_API bool SMX_LightsAnimation_Load(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+/// Enable or disable automatic panel animation playback.
+///
+/// When enabled, any animations loaded with SMX_LightsAnimation_Load will play
+/// automatically at 30 FPS. The released animation plays continuously; the pressed
+/// animation plays only while a panel is pressed and rewinds on release.
+///
+/// Animation playback is temporarily paused when SMX_SetLights2 is called directly,
+/// resuming after ~100ms of no direct lights calls.
+///
+/// @param enable True to start automatic animation, false to stop.
+SMX_API void SMX_LightsAnimation_SetAuto(bool enable);
+
 /// Information about a connected SMX device.
 /// This structure holds the current connection state and device metadata.
 /// Query it with SMX_GetInfo() to detect devices and retrieve their properties.
