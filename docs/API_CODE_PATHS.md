@@ -291,21 +291,19 @@ SMX_SetLights2(lightData, lightDataSize)
 │
 ├─ Guard: if !g_pSMX or !lightData, return
 ├─ Validate lightDataSize (must be 864 or 1350)
-├─ Split into per-pad data:
-│   ├─ 1350 bytes: lights[0] = first 675, lights[1] = second 675
-│   └─ 864 bytes:  lights[0] = first 432, lights[1] = second 432
 │
-└─ SMXManager::SetLights(lights[2])
+└─ SMXManager::SetLights(lightData, lightDataSize)
    ├─ Lock m_Lock
    ├─ Skip if panel test mode is active
-   ├─ For each pad with data:
-   │   ├─ Validate size (432 or 675 bytes per pad)
-   │   ├─ Pad 16-LED data to 25-LED with zeros if needed
+   ├─ Determine per-pad byte size from lightDataSize
+   ├─ For each pad:
+   │   ├─ Point into raw buffer at pad offset (no copy)
    │   ├─ For each of 9 panels:
-   │   │   ├─ Outer 4×4 (16 LEDs): scale by 0.6666, split into:
+   │   │   ├─ Outer 4×4 (16 LEDs): lookup-table scale, split into:
    │   │   │   ├─ Top 2 rows (8 LEDs × 3 RGB) → command '2'
    │   │   │   └─ Bottom 2 rows (8 LEDs × 3 RGB) → command '3'
-   │   │   └─ Inner 3×3 (9 LEDs): scale by 0.6666 → command '4'
+   │   │   └─ Inner 3×3 (9 LEDs): lookup-table scale → command '4'
+   │   │       (zeros if 16-LED mode)
    │   └─ Append '\n' to each command
    │
    ├─ Rate limiting (30 FPS):
@@ -498,7 +496,7 @@ SMX_LightsAnimation_SetAuto(enable)
 │           │   │   └─ If pressed: overlay pressed animation frame
 │           │   └─ Advance frame timing (timeInFrame += 1/30, wrap at loopFrame)
 │           ├─ Unlock
-│           ├─ Call SMX_SetLights2() (with g_bAnimThreadSending flag to skip self-pause)
+│           ├─ Call SMX_SetLights2_Internal() (bypasses TemporaryStop)
 │           └─ Sleep remainder of 33ms frame
 │
 └─ enable=false:
