@@ -84,7 +84,7 @@ body:
     attributes:
       label: HID traffic capture
       description: |
-        If this is a hardware-related issue, attach .smxhid capture files.
+        If this is a hardware-related issue, drag and drop .smxhid capture files here.
         Recording is built into the library. Set the environment variable before running your app:
         `SMX_CAPTURE_DIR=/tmp/captures ./your-application`
         Captures are saved to a timestamped subdirectory (e.g. `/tmp/captures/2026-05-12_11-10-56/device_0.smxhid`).
