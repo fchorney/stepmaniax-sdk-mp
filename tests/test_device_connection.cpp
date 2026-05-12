@@ -484,7 +484,7 @@ TEST_CASE("Pending command callback does not fire without response") {
     conn.SetActive(true);
 
     bool bCallbackFired = false;
-    conn.SendCommand("X", [&](string r) { bCallbackFired = true; });
+    conn.SendCommand("X", [&](string) { bCallbackFired = true; });
 
     string sError;
     conn.Update(sError);  // sends command

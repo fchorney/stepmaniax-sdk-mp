@@ -44,18 +44,6 @@ static string GetCaptureDir()
     return pDir ? string(pDir) : string();
 }
 
-// --- Helper: determine capture subdirectory based on connected hardware ---
-
-static string GetCaptureSubDir(const vector<HIDDeviceInfo> &devices)
-{
-    // We need to connect to determine P1/P2, but for directory naming
-    // we use device count: 1 device = solo, 2 = both_pads.
-    // The actual P1/P2 determination happens after connection.
-    if(devices.size() >= 2)
-        return "both_pads";
-    return "";  // determined after connection
-}
-
 // --- Helper: wait for condition with timeout ---
 
 static bool WaitFor(function<bool()> cond, int iTimeoutMs = 5000)
@@ -232,7 +220,7 @@ TEST_CASE("Real hardware: input state reads")
     int iExpected = static_cast<int>(devices.size());
 
     SMX_Start(
-        [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
             auto *d = static_cast<CallbackData *>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
                 d->iConnected.fetch_add(1);

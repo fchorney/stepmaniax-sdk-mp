@@ -19,7 +19,7 @@ void signal_handler(const int signal)
         g_shouldExit = 1;
 }
 
-void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void *pUser)
+void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, void * /*pUser*/)
 {
     if(SMX_REASON_IS(reason, SMXUpdateCallback_Disconnected))
     {

@@ -312,7 +312,7 @@ TEST_CASE("Device with firmware >= 5 uses 'G' (new config format)") {
     pFakeDevice->SetConfigResponse(MakeConfigResponse());
 
     int iConfigUpdated = 0;
-    auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+    auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_ConfigUpdated)
             (*static_cast<int*>(pUser))++;
     };
@@ -379,7 +379,7 @@ TEST_CASE("Device reconnects successfully after read error disconnect") {
     struct CallbackData { int *pConnected; int *pDisconnected; };
     CallbackData cbData = {&iConnectedCount, &iDisconnectedCount};
 
-    auto callback = [](int pad, SMXUpdateCallbackReason reason, void *pUser) {
+    auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         auto *data = static_cast<CallbackData*>(pUser);
         if(reason & SMXUpdateCallback_Connected)
             (*data->pConnected)++;

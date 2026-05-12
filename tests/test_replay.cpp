@@ -561,7 +561,7 @@ TEST_CASE("Replay: panel lights commands in capture")
             if(cmd == '2' || cmd == '3' || cmd == '4')
             {
                 // Check color bytes in the payload (skip the command byte itself)
-                for(size_t j = 4; j < 3 + w[2]; j++)
+                for(size_t j = 4; j < (size_t)(3 + w[2]); j++)
                 {
                     int val = static_cast<uint8_t>(w[j]);
                     if(val > iMaxColorValue)
