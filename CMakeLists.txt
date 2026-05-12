@@ -115,6 +115,26 @@ endif()
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_INTEGRATION_TESTS "Build integration tests (require real hardware)" OFF)
 
+# Coverage and sanitizers
+option(ENABLE_COVERAGE "Build with code coverage instrumentation (gcov)" OFF)
+option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
+option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
+
+if(ENABLE_COVERAGE)
+    add_compile_options(--coverage)
+    add_link_options(--coverage)
+endif()
+
+if(ENABLE_ASAN)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
+if(ENABLE_TSAN)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+
 if(BUILD_TESTS OR BUILD_INTEGRATION_TESTS)
     include(FetchContent)
     FetchContent_Declare(

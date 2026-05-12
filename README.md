@@ -225,6 +225,9 @@ mingw32-make
 | `BUILD_SAMPLE` | `OFF` | Build the sample application |
 | `BUILD_TESTS` | `OFF` | Build unit tests |
 | `BUILD_INTEGRATION_TESTS` | `OFF` | Build integration tests (require real hardware) |
+| `ENABLE_COVERAGE` | `OFF` | Build with code coverage instrumentation (gcov/lcov) |
+| `ENABLE_ASAN` | `OFF` | Build with AddressSanitizer (memory error detection) |
+| `ENABLE_TSAN` | `OFF` | Build with ThreadSanitizer (data race detection) |
 
 ```bash
 cmake .. -DBUILD_SAMPLE=ON                          # shared lib + sample
@@ -266,6 +269,41 @@ Tests skip gracefully if no hardware is detected. To record HID traffic for repl
 ```bash
 SMX_CAPTURE_DIR=/tmp/captures ./smx-integration-tests
 ```
+
+### Code coverage
+
+Build with coverage instrumentation to see which lines are exercised by tests:
+
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_TESTS=ON -DENABLE_COVERAGE=ON
+make
+./smx-tests
+lcov --capture --directory . --output-file coverage.info
+genhtml coverage.info --output-directory coverage_report
+```
+
+Open `coverage_report/index.html` in a browser to view per-file and per-line coverage.
+
+### Sanitizers
+
+AddressSanitizer detects memory errors (buffer overflows, use-after-free, leaks):
+
+```bash
+cmake .. -DBUILD_TESTS=ON -DENABLE_ASAN=ON
+make
+./smx-tests
+```
+
+ThreadSanitizer detects data races between threads:
+
+```bash
+cmake .. -DBUILD_TESTS=ON -DENABLE_TSAN=ON
+make
+./smx-tests
+```
+
+Both sanitizers print diagnostics to stderr at runtime if they detect issues. A clean run produces no extra output. ASan and TSan cannot be used simultaneously.
 
 ## Running the Sample
 
