@@ -617,12 +617,33 @@ Additional documentation is available in the `docs/` directory:
 ## Contributing
 
 1. Fork the repository and create a branch prefixed with your initials (e.g. `fc/add-feature`).
-2. Follow the code style documented in [AGENTS.md](AGENTS.md).
+2. Follow the code style conventions below.
 3. Write tests for any new functionality or bug fixes.
 4. Ensure `ctest` passes with `BUILD_TESTS=ON`.
 5. Open a pull request with a clear description of what changed and why.
 
 Keep PRs focused on a single concern. If you're fixing a bug and also refactoring nearby code, split them into separate PRs.
+
+### Code style
+
+- 4-space indentation, no tabs.
+- Opening braces on the same line for control flow (`if`, `for`, `while`), next line for function/class definitions.
+- Member variables use `m_` prefix with type-hinting: `m_b` (bool), `m_i` (int), `m_s` (string), `m_p` (pointer), `m_a` (array/vector).
+- Local variables use camelCase with similar type prefixes (`sError`, `iCount`, `bActive`).
+- Functions and methods use PascalCase (`GetInputState`, `SendCommand`).
+- Constants use UPPER_SNAKE_CASE.
+- `using namespace std;` is used within implementation files.
+- Doxygen-style `///` comments for public/important functions with `@param`, `@return` tags.
+- Prefer `const` parameters and `lock_guard` for mutex management.
+- No trailing whitespace. Files end with a newline.
+
+### Key considerations
+
+- **Input latency is paramount.** Any change to the USB polling thread or Report 3 handling path must not add latency.
+- **Thread safety.** The two-thread model requires careful attention to which thread owns which data.
+- **Keep the public API minimal.** Only `SMX_*` functions are exported. Internal classes stay in the `SMX` namespace or anonymous namespaces.
+- **Cross-platform.** All code must build on Linux, macOS, and Windows. Use standard C++14 and hidapi only.
+- **Always write tests.** Every bug fix or new feature must include tests.
 
 ## Reporting Issues
 
