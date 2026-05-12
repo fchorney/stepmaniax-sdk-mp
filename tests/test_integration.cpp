@@ -3,6 +3,7 @@
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 #include "SMXHIDRecorder.h"
+#include "SMXProtocolConstants.h"
 
 #include <atomic>
 #include <chrono>
@@ -46,7 +47,8 @@ static string GetCaptureDir()
 
 // --- Helper: wait for condition with timeout ---
 
-static bool WaitFor(function<bool()> cond, int iTimeoutMs = 5000)
+template<typename F>
+static bool WaitFor(F cond, int iTimeoutMs = 5000)
 {
     auto deadline = chrono::steady_clock::now() + chrono::milliseconds(iTimeoutMs);
     while(!cond())

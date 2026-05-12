@@ -120,6 +120,10 @@ option(ENABLE_COVERAGE "Build with code coverage instrumentation (gcov)" OFF)
 option(ENABLE_ASAN "Build with AddressSanitizer" OFF)
 option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
 
+if(ENABLE_ASAN AND ENABLE_TSAN)
+    message(FATAL_ERROR "ENABLE_ASAN and ENABLE_TSAN cannot be used simultaneously.")
+endif()
+
 if(ENABLE_COVERAGE)
     add_compile_options(--coverage)
     add_link_options(--coverage)
