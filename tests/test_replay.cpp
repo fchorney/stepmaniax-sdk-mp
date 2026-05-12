@@ -564,3 +564,121 @@ TEST_CASE("Replay: sensor test mode")
 
     SMX_Stop();
 }
+
+TEST_CASE("Replay: panel lights commands in capture")
+{
+    string sFile0 = CapturePath("panel_lights/device_0.smxhid");
+    string sFile1 = CapturePath("panel_lights/device_1.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool *>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+
+    // Analyze the recorded writes from device 0
+    auto &writes = devs[0]->GetExpectedWrites();
+
+    // Extract all lights commands in order
+    struct LightsCmd { char type; size_t payloadSize; size_t index; };
+    vector<LightsCmd> lightsCmds;
+    for(size_t i = 0; i < writes.size(); i++)
+    {
+        const auto &w = writes[i];
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '2' || cmd == '3' || cmd == '4')
+            {
+                // Reconstruct full command size from all packets of this command
+                // For START_OF_COMMAND packets, payload size is in w[2]
+                lightsCmds.push_back({cmd, w[2], i});
+            }
+        }
+    }
+
+    // Should have many lights commands (3 per frame, ~90 frames = ~270 commands)
+    MESSAGE("Total lights commands in capture: ", lightsCmds.size());
+    CHECK(lightsCmds.size() >= 30); // At least 10 full updates
+
+    // Verify commands come in groups of 3: '4', '2', '3' (firmware v5)
+    int iFullUpdates = 0;
+    for(size_t i = 0; i + 2 < lightsCmds.size(); i += 3)
+    {
+        if(lightsCmds[i].type == '4' &&
+           lightsCmds[i+1].type == '2' &&
+           lightsCmds[i+2].type == '3')
+        {
+            iFullUpdates++;
+        }
+    }
+    MESSAGE("Complete 4-2-3 update groups: ", iFullUpdates);
+    CHECK(iFullUpdates >= 10);
+
+    // Verify color scaling: no byte in the lights payload should exceed 170
+    // (since all input values are scaled by 0.6666, max output is 255*0.6666 ≈ 170)
+    int iMaxColorValue = 0;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 2)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '2' || cmd == '3' || cmd == '4')
+            {
+                // Check color bytes in the payload (skip the command byte itself)
+                for(size_t j = 4; j < 3 + w[2]; j++)
+                {
+                    int val = static_cast<uint8_t>(w[j]);
+                    if(val > iMaxColorValue)
+                        iMaxColorValue = val;
+                }
+            }
+        }
+    }
+    MESSAGE("Max color value in lights data: ", iMaxColorValue);
+    CHECK(iMaxColorValue <= 170);
+    CHECK(iMaxColorValue > 0); // Should have some non-zero colors
+
+    // If we have two devices, verify both got lights commands
+    if(devs.size() >= 2)
+    {
+        auto &writes1 = devs[1]->GetExpectedWrites();
+        bool bDev1HasLights = false;
+        for(const auto &w : writes1)
+        {
+            if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+               (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+            {
+                char cmd = static_cast<char>(w[3]);
+                if(cmd == '2' || cmd == '3' || cmd == '4')
+                {
+                    bDev1HasLights = true;
+                    break;
+                }
+            }
+        }
+        CHECK(bDev1HasLights);
+        MESSAGE("Device 1 also received lights commands");
+    }
+
+    SMX_Stop();
+}
