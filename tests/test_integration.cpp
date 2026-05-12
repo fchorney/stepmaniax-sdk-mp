@@ -1017,12 +1017,40 @@ TEST_CASE("Real hardware: animation upload to firmware")
 
     MESSAGE("Generated 3-frame upload GIF (", gif.size(), " bytes)");
 
-    // --- Prepare and upload ---
+    // --- Prepare and upload released animation ---
     const char *error = nullptr;
     bool bPrepared = SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(),
                                                      0, SMX_LightsType_Released, &error);
     REQUIRE(bPrepared);
     MESSAGE("Prepared released animation for upload");
+
+    // --- Generate a pressed animation (solid yellow) ---
+    vector<uint8_t> pressedGif;
+    auto pb2 = [&](uint8_t b) { pressedGif.push_back(b); };
+    auto p162 = [&](uint16_t v) { pressedGif.push_back(v & 0xFF); pressedGif.push_back(v >> 8); };
+    {
+        const char *h2 = "GIF89a";
+        pressedGif.insert(pressedGif.end(), h2, h2 + 6);
+        p162(W); p162(H); pb2(0x80); pb2(0); pb2(0);
+        pb2(255); pb2(255); pb2(0); // color 0: yellow
+        pb2(0); pb2(0); pb2(0);     // color 1: black
+        pb2(0x2C); p162(0); p162(0); p162(W); p162(H); pb2(0);
+        pb2(2); // LZW min code size
+        int total = W * H;
+        vector<uint8_t> lzw;
+        int bits = 0, bc = 0, cs = 3;
+        auto emit = [&](int code) { bits |= (code << bc); bc += cs; while(bc >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bc -= 8; } };
+        emit(4); int since = 0;
+        for(int i = 0; i < total; i++) { emit(0); since++; if(since >= 2) { emit(4); since = 0; } }
+        emit(5); if(bc > 0) lzw.push_back(bits & 0xFF);
+        for(size_t i = 0; i < lzw.size(); ) { size_t bs = min((size_t)255, lzw.size() - i); pb2((uint8_t)bs); pressedGif.insert(pressedGif.end(), lzw.begin() + i, lzw.begin() + i + bs); i += bs; }
+        pb2(0); pb2(0x3B);
+    }
+
+    bPrepared = SMX_LightsUpload_PrepareUpload((const char*)pressedGif.data(), pressedGif.size(),
+                                                0, SMX_LightsType_Pressed, &error);
+    REQUIRE(bPrepared);
+    MESSAGE("Prepared pressed animation (yellow) for upload");
 
     // Begin upload with progress tracking
     struct UploadState {
@@ -1039,22 +1067,31 @@ TEST_CASE("Real hardware: animation upload to firmware")
         }, &state);
 
     // Wait for upload to complete (may take several seconds due to EEPROM delays)
-    bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 30000);
+    bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 60000);
     CHECK(bCompleted);
     MESSAGE("Upload completed, final progress: ", state.lastProgress.load());
 
     // Give the firmware a moment to apply the animation
-    this_thread::sleep_for(chrono::seconds(3));
-    MESSAGE("Animation should be playing on pad (red -> green -> blue cycle)");
+    this_thread::sleep_for(chrono::seconds(5));
+    MESSAGE("Animation playing: released=red/green/blue cycle, pressed=yellow. Step on pad to test!");
 
     // Verify still connected
     SMX_GetInfo(0, &info);
     CHECK(info.m_bConnected);
 
-    // Restore normal behavior
-    SMX_ReenableAutoLights();
-    this_thread::sleep_for(chrono::milliseconds(500));
-    MESSAGE("Re-enabled auto lights to restore normal behavior");
+    // --- Restore pad by factory resetting and re-applying config ---
+    // Factory reset clears uploaded animations from EEPROM.
+    SMXConfig savedConfig = {};
+    REQUIRE(SMX_GetConfig(0, &savedConfig));
+    MESSAGE("Saved config before factory reset");
+
+    SMX_FactoryReset(0);
+    this_thread::sleep_for(chrono::seconds(2));
+
+    // Restore the original config
+    SMX_SetConfig(0, &savedConfig);
+    this_thread::sleep_for(chrono::seconds(1));
+    MESSAGE("Factory reset + config restore complete");
 
     SMX_Stop();
 }
