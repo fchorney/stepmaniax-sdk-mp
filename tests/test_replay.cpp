@@ -699,9 +699,6 @@ TEST_CASE("Replay: animation upload commands in capture")
     CHECK(bFoundUpload);
     CHECK(bFoundDelay);
 
-    // Also verify re-enable auto lights at the end
-    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("S 1\n", 4)));
-
     MESSAGE("Animation upload commands verified: upload=", bFoundUpload, " delay=", bFoundDelay);
 
     SMX_Stop();

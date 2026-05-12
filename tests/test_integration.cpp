@@ -1039,22 +1039,45 @@ TEST_CASE("Real hardware: factory reset restores defaults")
 
     REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
 
-    // Factory reset all connected pads. This clears uploaded animations and
-    // resets config to defaults. Placed last so it cleans up after all other tests.
+    // Factory reset all connected pads, then restore original config.
+    // This clears uploaded animations from EEPROM. Placed last so it
+    // cleans up after all other tests.
     for(int iPad = 0; iPad < 2; iPad++)
     {
         SMXInfo padInfo;
         SMX_GetInfo(iPad, &padInfo);
         if(!padInfo.m_bConnected) continue;
 
+        // Save original config
+        SMXConfig originalConfig = {};
+        REQUIRE(SMX_GetConfig(iPad, &originalConfig));
+        MESSAGE("Pad ", iPad, " original panelDebounceMicroseconds: ",
+                originalConfig.panelDebounceMicroseconds);
+
+        // Set a non-default value to verify reset works
+        SMXConfig modifiedConfig = originalConfig;
+        modifiedConfig.panelDebounceMicroseconds = 9999;
         int iCountBefore = iConfigUpdated.load();
+        SMX_SetConfig(iPad, &modifiedConfig);
+        REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+        // Factory reset
+        iCountBefore = iConfigUpdated.load();
         SMX_FactoryReset(iPad);
         REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
 
+        // Verify config was reset
         SMXConfig resetConfig = {};
         REQUIRE(SMX_GetConfig(iPad, &resetConfig));
-        MESSAGE("Pad ", iPad, " factory reset complete, panelDebounceMicroseconds=",
+        CHECK(resetConfig.panelDebounceMicroseconds != 9999);
+        MESSAGE("Pad ", iPad, " after reset panelDebounceMicroseconds: ",
                 resetConfig.panelDebounceMicroseconds);
+
+        // Restore original config
+        iCountBefore = iConfigUpdated.load();
+        SMX_SetConfig(iPad, &originalConfig);
+        WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
+        MESSAGE("Pad ", iPad, " config restored");
     }
 
     SMX_Stop();
