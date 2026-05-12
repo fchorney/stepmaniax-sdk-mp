@@ -756,9 +756,10 @@ SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, 
     for(const auto &pkt : masterPackets)
         addUploadCmd(pkt);
 
-    // Store for BeginUpload.
+    // Append to existing commands for this pad (allows preparing both released
+    // and pressed before a single BeginUpload call).
     lock_guard<mutex> lock(g_UploadMutex);
-    g_UploadCommands[pad] = std::move(commands);
+    g_UploadCommands[pad].insert(g_UploadCommands[pad].end(), commands.begin(), commands.end());
 
     return true;
 }
@@ -774,7 +775,8 @@ SMX_API void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback call
     vector<string> commands;
     {
         lock_guard<mutex> lock(g_UploadMutex);
-        commands = g_UploadCommands[pad];
+        commands = std::move(g_UploadCommands[pad]);
+        g_UploadCommands[pad].clear();
     }
 
     if(commands.empty())

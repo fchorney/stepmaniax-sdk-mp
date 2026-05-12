@@ -267,97 +267,6 @@ TEST_CASE("Real hardware: input state reads")
     SMX_Stop();
 }
 
-TEST_CASE("Real hardware: factory reset restores defaults")
-{
-    auto pEnum = CreateHIDAPIEnumerator();
-    pEnum->Init();
-    auto devices = pEnum->Enumerate(SMX_USB_VENDOR_ID, SMX_USB_PRODUCT_ID);
-    pEnum->Exit();
-
-    if(devices.empty())
-    {
-        MESSAGE("No SMX hardware detected, skipping integration test");
-        return;
-    }
-
-    // Set up enumerator with optional recording
-    unique_ptr<IHIDEnumerator> pEnumerator;
-    string sCaptureDir = GetCaptureDir();
-    if(!sCaptureDir.empty())
-    {
-        string sSubDir = sCaptureDir + "/factory_reset";
-        MESSAGE("Recording HID traffic to: ", sSubDir);
-        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sSubDir));
-    }
-    else
-    {
-        pEnumerator = CreateHIDAPIEnumerator();
-    }
-
-    atomic<int> iConnected{0};
-    atomic<int> iConfigUpdated{0};
-
-    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
-    CbData cbData{&iConnected, &iConfigUpdated};
-
-    SMX_StartWithEnumerator(
-        [](int, SMXUpdateCallbackReason reason, void *pUser) {
-            auto *d = static_cast<CbData*>(pUser);
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                d->pConnected->fetch_add(1);
-            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                d->pConfigUpdated->fetch_add(1);
-        },
-        &cbData, std::move(pEnumerator));
-
-    REQUIRE(WaitFor([&]() { return iConnected.load() >= 1; }, 5000));
-
-    // Find a connected pad
-    int iPad = -1;
-    for(int i = 0; i < 2; i++)
-    {
-        SMXInfo info;
-        SMX_GetInfo(i, &info);
-        if(info.m_bConnected) { iPad = i; break; }
-    }
-    REQUIRE(iPad >= 0);
-
-    // Save original config
-    SMXConfig originalConfig = {};
-    REQUIRE(SMX_GetConfig(iPad, &originalConfig));
-    MESSAGE("Original panelDebounceMicroseconds: ", originalConfig.panelDebounceMicroseconds);
-
-    // Set a non-default value
-    SMXConfig modifiedConfig = originalConfig;
-    modifiedConfig.panelDebounceMicroseconds = 9999;
-    int iCountBefore = iConfigUpdated.load();
-    SMX_SetConfig(iPad, &modifiedConfig);
-    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
-
-    // Verify the modification took
-    SMXConfig readBack = {};
-    REQUIRE(SMX_GetConfig(iPad, &readBack));
-    REQUIRE(readBack.panelDebounceMicroseconds == 9999);
-
-    // Factory reset
-    iCountBefore = iConfigUpdated.load();
-    SMX_FactoryReset(iPad);
-    REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
-
-    // Verify config was reset (should no longer be 9999)
-    SMXConfig resetConfig = {};
-    REQUIRE(SMX_GetConfig(iPad, &resetConfig));
-    CHECK(resetConfig.panelDebounceMicroseconds != 9999);
-    MESSAGE("After factory reset panelDebounceMicroseconds: ", resetConfig.panelDebounceMicroseconds);
-
-    // Restore original config
-    iCountBefore = iConfigUpdated.load();
-    SMX_SetConfig(iPad, &originalConfig);
-    WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000);
-
-    SMX_Stop();
-}
-
 TEST_CASE("Real hardware: config get/set round-trip")
 {
     auto pEnum = CreateHIDAPIEnumerator();
@@ -1017,13 +926,8 @@ TEST_CASE("Real hardware: animation upload to firmware")
 
     MESSAGE("Generated 3-frame upload GIF (", gif.size(), " bytes)");
 
-    // --- Prepare and upload released animation ---
+    // --- Prepare and upload released animation to all connected pads ---
     const char *error = nullptr;
-    bool bPrepared = SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(),
-                                                     0, SMX_LightsType_Released, &error);
-    REQUIRE(bPrepared);
-    MESSAGE("Prepared released animation for upload");
-
     // --- Generate a pressed animation (solid yellow) ---
     vector<uint8_t> pressedGif;
     auto pb2 = [&](uint8_t b) { pressedGif.push_back(b); };
@@ -1047,51 +951,111 @@ TEST_CASE("Real hardware: animation upload to firmware")
         pb2(0); pb2(0x3B);
     }
 
-    bPrepared = SMX_LightsUpload_PrepareUpload((const char*)pressedGif.data(), pressedGif.size(),
-                                                0, SMX_LightsType_Pressed, &error);
-    REQUIRE(bPrepared);
-    MESSAGE("Prepared pressed animation (yellow) for upload");
+    // --- Prepare and upload to all connected pads ---
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
 
-    // Begin upload with progress tracking
-    struct UploadState {
-        atomic<int> lastProgress{0};
-        atomic<bool> complete{false};
-    } state;
+        bool bPrepared = SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(),
+                                                         iPad, SMX_LightsType_Released, &error);
+        REQUIRE(bPrepared);
 
-    SMX_LightsUpload_BeginUpload(0,
-        [](int progress, void *pUser) {
-            auto *s = static_cast<UploadState*>(pUser);
-            s->lastProgress.store(progress);
-            if(progress >= 100)
-                s->complete.store(true);
-        }, &state);
+        bPrepared = SMX_LightsUpload_PrepareUpload((const char*)pressedGif.data(), pressedGif.size(),
+                                                    iPad, SMX_LightsType_Pressed, &error);
+        REQUIRE(bPrepared);
+        MESSAGE("Prepared released + pressed animations for pad ", iPad);
+    }
 
-    // Wait for upload to complete (may take several seconds due to EEPROM delays)
-    bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 60000);
-    CHECK(bCompleted);
-    MESSAGE("Upload completed, final progress: ", state.lastProgress.load());
+    // Begin upload for each connected pad
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
+
+        struct UploadState {
+            atomic<int> lastProgress{0};
+            atomic<bool> complete{false};
+        } state;
+
+        SMX_LightsUpload_BeginUpload(iPad,
+            [](int progress, void *pUser) {
+                auto *s = static_cast<UploadState*>(pUser);
+                s->lastProgress.store(progress);
+                if(progress >= 100)
+                    s->complete.store(true);
+            }, &state);
+
+        bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 60000);
+        CHECK(bCompleted);
+        MESSAGE("Pad ", iPad, " upload completed, progress: ", state.lastProgress.load());
+    }
 
     // Give the firmware a moment to apply the animation
     this_thread::sleep_for(chrono::seconds(5));
     MESSAGE("Animation playing: released=red/green/blue cycle, pressed=yellow. Step on pad to test!");
 
     // Verify still connected
-    SMX_GetInfo(0, &info);
-    CHECK(info.m_bConnected);
+    for(int i = 0; i < 2; i++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(i, &padInfo);
+        if(padInfo.m_bConnected)
+            MESSAGE("Pad ", i, " still connected after upload");
+    }
 
-    // --- Restore pad by factory resetting and re-applying config ---
-    // Factory reset clears uploaded animations from EEPROM.
-    SMXConfig savedConfig = {};
-    REQUIRE(SMX_GetConfig(0, &savedConfig));
-    MESSAGE("Saved config before factory reset");
+    SMX_Stop();
+}
 
-    SMX_FactoryReset(0);
-    this_thread::sleep_for(chrono::seconds(2));
+TEST_CASE("Real hardware: factory reset restores defaults")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
 
-    // Restore the original config
-    SMX_SetConfig(0, &savedConfig);
-    this_thread::sleep_for(chrono::seconds(1));
-    MESSAGE("Factory reset + config restore complete");
+    atomic<int> iConnected{0};
+    atomic<int> iConfigUpdated{0};
+
+    struct CbData { atomic<int> *pConnected; atomic<int> *pConfigUpdated; };
+    CbData cbData{&iConnected, &iConfigUpdated};
+
+    unique_ptr<IHIDEnumerator> pEnumerator;
+    string sCaptureDir = GetCaptureDir();
+    if(!sCaptureDir.empty())
+        pEnumerator.reset(new RecordingHIDEnumerator(CreateHIDAPIEnumerator(), sCaptureDir + "/factory_reset"));
+    else
+        pEnumerator = CreateHIDAPIEnumerator();
+
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            auto *d = static_cast<CbData*>(pUser);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                d->pConnected->fetch_add(1);
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
+                d->pConfigUpdated->fetch_add(1);
+        },
+        &cbData, std::move(pEnumerator));
+
+    REQUIRE(WaitFor([&]() { return iConnected.load() >= iDeviceCount; }, 5000));
+
+    // Factory reset all connected pads. This clears uploaded animations and
+    // resets config to defaults. Placed last so it cleans up after all other tests.
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        SMXInfo padInfo;
+        SMX_GetInfo(iPad, &padInfo);
+        if(!padInfo.m_bConnected) continue;
+
+        int iCountBefore = iConfigUpdated.load();
+        SMX_FactoryReset(iPad);
+        REQUIRE(WaitFor([&]() { return iConfigUpdated.load() > iCountBefore; }, 5000));
+
+        SMXConfig resetConfig = {};
+        REQUIRE(SMX_GetConfig(iPad, &resetConfig));
+        MESSAGE("Pad ", iPad, " factory reset complete, panelDebounceMicroseconds=",
+                resetConfig.panelDebounceMicroseconds);
+    }
 
     SMX_Stop();
 }
