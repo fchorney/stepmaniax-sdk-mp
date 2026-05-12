@@ -724,7 +724,11 @@ public:
         auto thisId = this_thread::get_id();
         if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
         {
-            Log("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting.");
+            Log(ssprintf("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting. "
+                         "(caller=%s, main=%s, usb=%s)",
+                         thisId == m_MainThreadId ? "MainThread" : "USBThread",
+                         m_MainThreadId == thread::id() ? "unset" : "set",
+                         m_USBPollingThreadId == thread::id() ? "unset" : "set"));
             abort();
         }
 
