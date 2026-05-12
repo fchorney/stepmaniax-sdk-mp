@@ -73,13 +73,13 @@ struct SMXDeviceInfo
 ///    - Parses Report 3 (input state) packets completely and inline
 ///    - Updates m_iInputState atomically (no lock needed)
 ///    - Extracts Report 6 (command/config) packets and appends to m_sReport6Buffer
-///    - File reporting: see USBPollingThreadMain() in SMX.cpp
+///    - See USBPollingThreadMain() in SMXManager.cpp
 ///
 /// 2. Main I/O Thread (every ~50ms, holds m_pLock):
 ///    - Calls CheckReads() to process Report 6 packets from m_sReport6Buffer
 ///    - Handles fragmentation (START/END flags), command callbacks, timeouts
 ///    - Never touches Report 3 or m_iInputState
-///    - File reporting: see ThreadMain() in SMX.cpp
+///    - See ThreadMain() in SMXManager.cpp
 ///
 /// MEMBER VARIABLE THREADING GUARANTEES:
 ///
@@ -219,23 +219,28 @@ private:
     /// @param buf Packet data including report ID as first byte.
     void HandleUsbPacket(const std::string &buf);
 
-    std::unique_ptr<IHIDDevice> m_pDevice;
-    std::string m_sPath;
-    bool m_bActive = false;
-    bool m_bGotInfo = false;
+    // --- Connection state (immutable after Open, main thread only) ---
+    std::unique_ptr<IHIDDevice> m_pDevice;  // HID device handle (nullptr when disconnected)
+    std::string m_sPath;                    // HID device path for identification
+    bool m_bActive = false;                 // True after activation command sent
+    bool m_bGotInfo = false;                // True once device info response received
 
-    std::list<std::string> m_sReadBuffers;
-    std::string m_sCurrentReadBuffer;
+    // --- Packet reassembly (main thread, protected by external lock) ---
+    std::list<std::string> m_sReadBuffers;      // Complete packets ready for application
+    std::string m_sCurrentReadBuffer;           // Fragment accumulation for Report 6
 
-    std::atomic<uint16_t> m_iInputState{0};
-    std::atomic<bool> m_bAlwaysFireInputCallback{false};
-    std::atomic<bool> m_bHadReadError{false};
+    // --- Input state (lock-free atomics, USB thread writes, any thread reads) ---
+    std::atomic<uint16_t> m_iInputState{0};              // Current panel press bitmask
+    std::atomic<bool> m_bAlwaysFireInputCallback{false};  // Fire callback on every packet
+    std::atomic<bool> m_bHadReadError{false};             // USB thread signals read failure
 
-    std::string m_sReport6Buffer;
-    std::mutex m_Report6BufferMutex;
+    // --- Report 6 buffer (protected by m_Report6BufferMutex) ---
+    std::string m_sReport6Buffer;           // Raw Report 6 packets from USB thread
+    std::mutex m_Report6BufferMutex;        // Guards m_sReport6Buffer
 
-    SMXDeviceInfo m_DeviceInfo;
-    std::function<void()> m_pInputStateChangedCallback;
+    // --- Device metadata and callbacks ---
+    SMXDeviceInfo m_DeviceInfo;                          // Cached device info (fw version, serial, P1/P2)
+    std::function<void()> m_pInputStateChangedCallback;  // Fired from USB thread on state change
 
     /// Represents a command pending transmission or awaiting response.
     /// Commands may be fragmented into multiple 64-byte HID packets.

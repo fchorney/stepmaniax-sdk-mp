@@ -65,31 +65,38 @@ private:
 
     /// A single lights command to be sent to both pads at a scheduled time.
     struct PendingLightsCommand {
-        double fTimeToSend = 0;
-        std::string sPadCommand[2];
+        double fTimeToSend = 0;       // Monotonic time when this command should be dispatched
+        std::string sPadCommand[2];   // Command string per pad (empty = skip)
     };
 
-    std::recursive_mutex m_Lock;
-    std::thread m_Thread;
-    std::thread m_USBPollingThread;
-    std::thread::id m_MainThreadId;
-    std::thread::id m_USBPollingThreadId;
-    std::condition_variable_any m_Cond;
-    std::atomic<bool> m_bShutdown{false};
-    std::atomic<int> m_iMainThreadSleepMs{50};
-    std::atomic<int> m_iUSBPollingSleepUs{1000};
-    SMXDevice m_Devices[2];
-    std::function<void(int, SMXUpdateCallbackReason)> m_Callback;
-    std::unique_ptr<IHIDEnumerator> m_pEnumerator;
-    PanelTestMode m_PanelTestMode = PanelTestMode_Off;
-    PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off;
-    double m_fLastPanelTestModeSentAt = 0;
-    double m_fLastEnumerationTime = 0;
+    // --- Synchronization and threading ---
+    std::recursive_mutex m_Lock;                // Protects all mutable state below
+    std::thread m_Thread;                       // Main I/O thread (connections, commands, config)
+    std::thread m_USBPollingThread;             // USB polling thread (input state reads)
+    std::thread::id m_MainThreadId;             // For deadlock detection in destructor
+    std::thread::id m_USBPollingThreadId;       // For deadlock detection in destructor
+    std::condition_variable_any m_Cond;         // Signals main thread on Report 6 data or shutdown
+    std::atomic<bool> m_bShutdown{false};       // Set to true to stop both threads
 
-    // Lights command queue and rate limiting state.
-    std::vector<PendingLightsCommand> m_aPendingLightsCommands;
-    double m_fDelayLightCommandsUntil = 0;
-    int m_iLightsCommandsInProgress = 0;
+    // --- Polling rate configuration ---
+    std::atomic<int> m_iMainThreadSleepMs{50};  // Main thread sleep between iterations (ms)
+    std::atomic<int> m_iUSBPollingSleepUs{1000}; // USB polling thread sleep between cycles (µs)
+
+    // --- Devices and discovery ---
+    SMXDevice m_Devices[2];                     // Pad slots: index 0 = P1, index 1 = P2
+    std::function<void(int, SMXUpdateCallbackReason)> m_Callback;  // Application update callback
+    std::unique_ptr<IHIDEnumerator> m_pEnumerator;  // HID device enumerator (real or fake)
+    double m_fLastEnumerationTime = 0;          // Rate-limits HID enumeration to 1/sec
+
+    // --- Panel test mode ---
+    PanelTestMode m_PanelTestMode = PanelTestMode_Off;       // Requested mode
+    PanelTestMode m_LastSentPanelTestMode = PanelTestMode_Off; // Last mode sent to device
+    double m_fLastPanelTestModeSentAt = 0;                   // For periodic refresh (~1s)
+
+    // --- Lights command queue ---
+    std::vector<PendingLightsCommand> m_aPendingLightsCommands;  // Scheduled lights commands
+    double m_fDelayLightCommandsUntil = 0;  // Rate-limits lights to 30 FPS
+    int m_iLightsCommandsInProgress = 0;    // Outstanding async lights commands
 };
 
 } // namespace SMX

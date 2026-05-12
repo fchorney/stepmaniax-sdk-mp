@@ -36,7 +36,7 @@
 
 using namespace std;
 
-// Declared in SMX.cpp
+// Declared in SMXHelpers.h
 namespace SMX { double GetMonotonicTime(); }
 
 namespace {

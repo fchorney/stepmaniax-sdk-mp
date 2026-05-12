@@ -108,21 +108,30 @@ private:
     void UpdateSensorTestMode();
     void HandleSensorTestDataResponse(const std::string &buf);
 
-    std::recursive_mutex *m_pLock = nullptr;
-    int m_iPadIndex = 0;
+    // --- Synchronization ---
+    std::recursive_mutex *m_pLock = nullptr;  // Manager's lock, used for all mutable state access
+
+    // --- Identity and callbacks ---
+    int m_iPadIndex = 0;  // Slot index (0 = P1, 1 = P2), used in callback notifications
     std::function<void(int, SMXUpdateCallbackReason)> m_pUpdateCallback;
-    SMXDeviceConnection m_Connection;
-    SMXConfig m_Config;
-    SMXConfig m_WantedConfig;
-    bool m_bHaveConfig = false;
-    bool m_bSendConfig = false;
-    bool m_bSendingConfig = false;
-    double m_fDelayConfigUpdatesUntil = 0;
-    SensorTestMode m_SensorTestMode = SensorTestMode_Off;
-    SensorTestMode m_WaitingForSensorTestModeResponse = SensorTestMode_Off;
-    double m_fSentSensorTestModeRequestAt = 0;
-    SMXSensorTestModeData m_SensorTestData{};
-    bool m_bHaveSensorTestData = false;
+
+    // --- Connection ---
+    SMXDeviceConnection m_Connection;  // Low-level HID I/O for this device
+
+    // --- Configuration state ---
+    SMXConfig m_Config;                    // Last config read from device
+    SMXConfig m_WantedConfig;              // Pending config to write (set by SetConfig)
+    bool m_bHaveConfig = false;            // True once initial config has been read
+    bool m_bSendConfig = false;            // True if m_WantedConfig needs to be sent
+    bool m_bSendingConfig = false;         // True while a config write is in flight
+    double m_fDelayConfigUpdatesUntil = 0; // Rate-limit: earliest time next write is allowed
+
+    // --- Sensor test mode ---
+    SensorTestMode m_SensorTestMode = SensorTestMode_Off;                    // Currently requested mode
+    SensorTestMode m_WaitingForSensorTestModeResponse = SensorTestMode_Off;  // Mode of outstanding request
+    double m_fSentSensorTestModeRequestAt = 0;                               // For timeout detection
+    SMXSensorTestModeData m_SensorTestData{};                                // Most recent test data
+    bool m_bHaveSensorTestData = false;                                      // True once data received
 };
 
 } // namespace SMX

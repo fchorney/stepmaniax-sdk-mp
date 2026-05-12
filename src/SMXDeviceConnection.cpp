@@ -5,7 +5,7 @@
 #include <cstring>
 #include <utility>
 
-// These are defined in SMX.cpp.
+// Declared in SMXHelpers.h
 namespace SMX {
     void Log(const std::string &s);
     std::string ssprintf(const char *fmt, ...);
