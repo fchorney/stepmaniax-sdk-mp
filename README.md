@@ -614,6 +614,23 @@ Additional documentation is available in the `docs/` directory:
 - [API Code Paths](docs/API_CODE_PATHS.md) - traces the execution path of each public API function through the SDK internals, including threading model diagrams and the device connection lifecycle
 - [USB Protocol](docs/USB_PROTOCOL.md) - describes the USB HID communication protocol used by SMX pads, including packet formats, command reference, and hardware architecture
 
+### Decoding HID captures
+
+The `scripts/decode_smxhid.py` script decodes `.smxhid` capture files to human-readable output:
+
+```bash
+./scripts/decode_smxhid.py /tmp/captures/2026-05-12_11-10-56/device_0.smxhid
+
+# Show only command/config packets (hide input state)
+./scripts/decode_smxhid.py device_0.smxhid --commands
+
+# Show only input state packets
+./scripts/decode_smxhid.py device_0.smxhid --input
+
+# Include raw packet data as byte arrays
+./scripts/decode_smxhid.py device_0.smxhid --data
+```
+
 ## Contributing
 
 1. Fork the repository and create a branch prefixed with your initials (e.g. `fc/add-feature`).
