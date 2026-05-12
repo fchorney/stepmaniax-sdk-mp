@@ -71,6 +71,9 @@ add_library(smx-mp
     src/SMXConfigPacket.cpp
     src/SMXDeviceConnection.cpp
     src/SMXHIDInterface.cpp
+    src/SMXHelpers.cpp
+    src/SMXDevice.cpp
+    src/SMXManager.cpp
     src/SMXPanelAnimation.cpp
     src/SMX.cpp
 )
@@ -140,6 +143,9 @@ if(BUILD_TESTS)
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXHelpers.cpp
+        src/SMXDevice.cpp
+        src/SMXManager.cpp
         src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )
@@ -170,6 +176,9 @@ if(BUILD_INTEGRATION_TESTS)
         src/SMXDeviceConnection.cpp
         src/SMXHIDInterface.cpp
         src/SMXHIDRecorder.cpp
+        src/SMXHelpers.cpp
+        src/SMXDevice.cpp
+        src/SMXManager.cpp
         src/SMXPanelAnimation.cpp
         src/SMX.cpp
     )

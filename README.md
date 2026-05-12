@@ -520,7 +520,13 @@ Panel: ┌───┬───┬───┐
 ├── include/
 │   └── SMX.h                    # Public API header
 ├── src/
-│   ├── SMX.cpp                  # Helpers, device logic, manager, API implementation
+│   ├── SMX.cpp                  # Public C API and test-only API
+│   ├── SMXHelpers.h             # Internal utility function declarations
+│   ├── SMXHelpers.cpp           # Logging, timing, formatting, binary conversion
+│   ├── SMXDevice.h              # Per-controller device class (header)
+│   ├── SMXDevice.cpp            # Per-controller device class (implementation)
+│   ├── SMXManager.h             # Device manager / orchestration (header)
+│   ├── SMXManager.cpp           # Device manager / orchestration (implementation)
 │   ├── SMXDeviceConnection.h    # HID I/O class (header)
 │   ├── SMXDeviceConnection.cpp  # HID I/O class (implementation)
 │   ├── SMXHIDInterface.h        # HID abstraction interfaces
