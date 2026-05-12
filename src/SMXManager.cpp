@@ -281,9 +281,10 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 
 void SMXManager::SendPendingLightsCommands()
 {
-    while(!m_aPendingLightsCommands.empty())
+    size_t iConsumed = 0;
+    while(iConsumed < m_aPendingLightsCommands.size())
     {
-        const PendingLightsCommand &cmd = m_aPendingLightsCommands[0];
+        const PendingLightsCommand &cmd = m_aPendingLightsCommands[iConsumed];
         if(cmd.fTimeToSend > GetMonotonicTime())
             break;
 
@@ -299,8 +300,12 @@ void SMXManager::SendPendingLightsCommands()
             }
         }
 
-        m_aPendingLightsCommands.erase(m_aPendingLightsCommands.begin());
+        iConsumed++;
     }
+
+    if(iConsumed > 0)
+        m_aPendingLightsCommands.erase(m_aPendingLightsCommands.begin(),
+                                       m_aPendingLightsCommands.begin() + iConsumed);
 }
 
 void SMXManager::SetPanelTestMode(PanelTestMode mode)

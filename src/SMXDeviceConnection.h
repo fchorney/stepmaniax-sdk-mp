@@ -2,8 +2,8 @@
 #define SMXDeviceConnection_h
 
 #include <atomic>
+#include <deque>
 #include <functional>
-#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -141,7 +141,7 @@ public:
     bool IsConnectedWithDeviceInfo() const { return m_pDevice != nullptr && m_bGotInfo; }
 
     /// Returns the HID device path.
-    std::string GetPath() const { return m_sPath; }
+    const std::string &GetPath() const { return m_sPath; }
 
     /// Retrieves the cached device information.
     /// Only valid after IsConnectedWithDeviceInfo() returns true.
@@ -211,8 +211,9 @@ private:
 
     /// Processes a single Report 6 USB packet received from the device.
     /// Handles command/config packets with fragmentation flags.
-    /// @param buf Packet data including report ID as first byte.
-    void HandleUsbPacket(const std::string &buf);
+    /// @param pData Pointer to packet data (flags byte at offset 0, not report ID).
+    /// @param iLen Total length of the packet (header + payload).
+    void HandleUsbPacket(const char *pData, size_t iLen);
 
     // --- Connection state (immutable after Open, main thread only) ---
     std::unique_ptr<IHIDDevice> m_pDevice;  // HID device handle (nullptr when disconnected)
@@ -221,7 +222,7 @@ private:
     bool m_bGotInfo = false;                // True once device info response received
 
     // --- Packet reassembly (main thread, protected by external lock) ---
-    std::list<std::string> m_sReadBuffers;      // Complete packets ready for application
+    std::deque<std::string> m_sReadBuffers;     // Complete packets ready for application
     std::string m_sCurrentReadBuffer;           // Fragment accumulation for Report 6
 
     // --- Input state (lock-free atomics, USB thread writes, any thread reads) ---
@@ -247,8 +248,8 @@ private:
         double m_fSentAt = 0;                                     // Time when command was sent (for timeout detection)
     };
 
-    std::list<std::shared_ptr<PendingCommand>> m_aPendingCommands; // Queue of commands not yet sent
-    std::shared_ptr<PendingCommand> m_pCurrentCommand;             // Command currently awaiting response
+    std::deque<std::unique_ptr<PendingCommand>> m_aPendingCommands; // Queue of commands not yet sent
+    std::unique_ptr<PendingCommand> m_pCurrentCommand;             // Command currently awaiting response
 };
 
 }

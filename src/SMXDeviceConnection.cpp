@@ -161,7 +161,7 @@ bool SMXDeviceConnection::ReadPacket(string &out)
 {
     if(m_sReadBuffers.empty())
         return false;
-    out = m_sReadBuffers.front();
+    out = std::move(m_sReadBuffers.front());
     m_sReadBuffers.pop_front();
     return true;
 }
@@ -180,7 +180,7 @@ void SMXDeviceConnection::CheckReads()
         {
             Log("Command timed out. Retrying...");
             m_pCurrentCommand->m_bSent = false;
-            m_aPendingCommands.push_front(m_pCurrentCommand);
+            m_aPendingCommands.push_front(std::move(m_pCurrentCommand));
             m_pCurrentCommand = nullptr;
         }
     }
@@ -200,8 +200,7 @@ void SMXDeviceConnection::CheckReads()
     {
         const size_t packetLen = 3 + static_cast<uint8_t>(localBuffer[processedBytes + 2]);
 
-        string sPacket = localBuffer.substr(processedBytes, packetLen);
-        HandleUsbPacket(sPacket);
+        HandleUsbPacket(localBuffer.data() + processedBytes, packetLen);
         processedBytes += packetLen;
     }
 
@@ -222,12 +221,14 @@ void SMXDeviceConnection::CheckReads()
 /// - START_OF_COMMAND: clears partial data and begins new packet
 /// - END_OF_COMMAND: queues the complete packet to m_sReadBuffers
 /// - HOST_CMD_FINISHED: invokes command callback if present
-void SMXDeviceConnection::HandleUsbPacket(const string &buf)
+void SMXDeviceConnection::HandleUsbPacket(const char *pData, size_t iLen)
 {
-    const int cmd = static_cast<uint8_t>(buf[1]);      // Command/flags byte
-    const int bytes = static_cast<uint8_t>(buf[2]);    // Payload length
+    if(iLen < 3)
+        return;
 
-    string sPacket(buf.begin() + 3, buf.begin() + 3 + bytes);
+    const int cmd = static_cast<uint8_t>(pData[1]);      // Command/flags byte
+    const int bytes = static_cast<uint8_t>(pData[2]);    // Payload length
+    const char *pPayload = pData + 3;
 
     // Device info response (special flag 0x80)
     if(cmd & PACKET_FLAG_DEVICE_INFO)
@@ -236,7 +237,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
             return;
 
         data_info_packet packet = {};
-        memcpy(&packet, sPacket.data(), min(sPacket.size(), sizeof(packet)));
+        memcpy(&packet, pPayload, min(static_cast<size_t>(bytes), sizeof(packet)));
 
         m_DeviceInfo.m_bP2 = (packet.player == '1');
         m_DeviceInfo.m_iFirmwareVersion = packet.firmware_version;
@@ -249,7 +250,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         m_bGotInfo = true;
 
         if(m_pCurrentCommand->m_pComplete)
-            m_pCurrentCommand->m_pComplete(sPacket);
+            m_pCurrentCommand->m_pComplete(string(pPayload, bytes));
         m_pCurrentCommand = nullptr;
         return;
     }
@@ -266,7 +267,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
         m_sCurrentReadBuffer.clear();
     }
 
-    m_sCurrentReadBuffer.append(sPacket);
+    m_sCurrentReadBuffer.append(pPayload, bytes);
 
     // HOST_CMD_FINISHED: invoke callback if this is a command response
     if(cmd & PACKET_FLAG_HOST_CMD_FINISHED)
@@ -280,7 +281,7 @@ void SMXDeviceConnection::HandleUsbPacket(const string &buf)
     if(cmd & PACKET_FLAG_END_OF_COMMAND)
     {
         if(!m_sCurrentReadBuffer.empty())
-            m_sReadBuffers.push_back(m_sCurrentReadBuffer);
+            m_sReadBuffers.push_back(std::move(m_sCurrentReadBuffer));
         m_sCurrentReadBuffer.clear();
     }
 }
@@ -298,7 +299,7 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     if(m_aPendingCommands.empty())
         return;
 
-    const auto pCmd = m_aPendingCommands.front();
+    auto pCmd = std::move(m_aPendingCommands.front());
     m_aPendingCommands.pop_front();
 
     // Send all HID packets for this command sequentially.
@@ -319,7 +320,7 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     // Mark command as sent and start timeout timer.
     pCmd->m_bSent = true;
     pCmd->m_fSentAt = GetMonotonicTime();
-    m_pCurrentCommand = pCmd;
+    m_pCurrentCommand = std::move(pCmd);
 }
 
 /// Sends a device info request to the device asynchronously.
@@ -328,7 +329,7 @@ void SMXDeviceConnection::CheckWrites(string &sError)
 /// and sets m_bGotInfo when complete, so no special completion callback is needed.
 void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pComplete)
 {
-    const auto pCmd = make_shared<PendingCommand>();
+    auto pCmd = make_unique<PendingCommand>();
     pCmd->m_pComplete = std::move(pComplete);
     pCmd->m_bIsDeviceInfoCommand = true;
 
@@ -338,8 +339,8 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
     sPacket[1] = static_cast<char>(PACKET_FLAG_DEVICE_INFO);
     sPacket[2] = 0;
 
-    pCmd->sData = sPacket;
-    m_aPendingCommands.push_back(pCmd);
+    pCmd->sData = std::move(sPacket);
+    m_aPendingCommands.push_back(std::move(pCmd));
 }
 
 /// Queues a command for transmission to the device.
@@ -353,7 +354,7 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
 /// by CheckWrites. Commands are processed one at a time; this just queues them.
 void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string response)> pComplete)
 {
-    const auto pCmd = make_shared<PendingCommand>();
+    auto pCmd = make_unique<PendingCommand>();
     pCmd->m_pComplete = std::move(pComplete);
 
     // Build HID packets. Each carries up to 61 bytes of command payload.
@@ -379,8 +380,8 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
         i += iPacketSize;
     } while(i < static_cast<int>(cmd.size()));
 
-    pCmd->sData = allPackets;
-    m_aPendingCommands.push_back(pCmd);
+    pCmd->sData = std::move(allPackets);
+    m_aPendingCommands.push_back(std::move(pCmd));
 }
 
 /// Polls for USB data, called by the USB polling thread.

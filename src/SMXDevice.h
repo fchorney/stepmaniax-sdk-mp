@@ -49,7 +49,7 @@ public:
     SMXDeviceConnection *GetConnection() { return &m_Connection; }
 
     /// Returns the HID path of this device.
-    std::string GetDevicePath() const { return m_Connection.GetPath(); }
+    const std::string &GetDevicePath() const { return m_Connection.GetPath(); }
 
     bool IsConnected() const;
 
