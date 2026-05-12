@@ -189,6 +189,8 @@ All application-level commands follow the same pattern: the host sends a command
 | Panel Test Mode | `'t'` + `' '` + mode + `'\n'` | Host → Device | Diagnostic lighting |
 | Sensor Test Request | `'y'` + mode + `'\n'` | Host → Device | Request sensor data |
 | Sensor Test Response | `'y'` + mode + size + data | Device → Host | Sensor test results |
+| Animation Upload | `'m'` + panel + idx + final + offset + size + data | Host → Device | Upload animation data to EEPROM |
+| Upload Delay | `'d'` + milliseconds | Host → Device | Delay master for EEPROM write time |
 | Config Response (new) | `'G'` + size + data | Device → Host | Config data (fw v5+) |
 | Config Response (old) | `'g'` + size + data | Device → Host | Config data (fw < v5) |
 
@@ -356,6 +358,44 @@ Bit 79:     Bad jumper [3]
 ```
 
 Each panel has 4 sensors. The sensor level meaning depends on the test mode.
+
+### Animation Upload
+
+Animations are uploaded to panel EEPROM for offline playback (when the SDK is not controlling lights). The upload uses two commands:
+
+**Upload packet (`'m'`):**
+
+```
+Byte 0:     'm' (0x6D)
+Byte 1:     Panel index (0-8 for panels, 0xFF for master timing data)
+Byte 2:     Animation index (0 = released, 1 = pressed)
+Byte 3:     Final packet flag (1 = last packet, triggers firmware to apply)
+Bytes 4-5:  Offset into panel/master data (uint16_t, little-endian)
+Byte 6:     Data size (1-240)
+Bytes 7+:   Data payload (up to 240 bytes)
+```
+
+**Delay packet (`'d'`):**
+
+```
+Byte 0:     'd' (0x64)
+Bytes 1-2:  Delay in milliseconds (uint16_t, little-endian)
+```
+
+**Panel data layout (922 bytes per panel):**
+- `graphics[64]`: 64 packed sprites, 13 bytes each (4-bit paletted, 25 pixels). Released uses indices 0-31, pressed uses 32-63.
+- `palettes[2]`: Two 15-color palettes (45 bytes each). Index 0 for released, 1 for pressed.
+
+**Master timing data (129 bytes):**
+- `loop_animation_frame` (1 byte): frame index to loop back to
+- `frames[64]`: graphic indices to display (0xFF = end/loop)
+- `delay[64]`: duration of each frame in 30 FPS counts
+
+**Upload strategy:**
+- Panel data is interleaved across all 9 panels (one packet per panel per burst) to parallelize EEPROM writes
+- After each burst, a delay of `max_packet_size × 3.4ms` is inserted (EEPROM write time per byte)
+- Panel data is sent twice for reliability (panels ignore unchanged data)
+- Master timing data is sent last with `final_packet=1` on the last packet
 
 ### Factory Reset
 

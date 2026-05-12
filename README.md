@@ -38,13 +38,12 @@ Comparison of features between this SDK and the original StepManiaX SDK.
 | Platform LED strip | `SMX_SetPlatformLights` | Control the platform edge LED strip (firmware v4+) |
 | Panel LED control | `SMX_SetLights2` | Set RGB colors for all panel LEDs (up to 30 FPS) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | Load and auto-play GIF animations on panels |
+| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | Upload animations to firmware EEPROM for offline playback |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
 
 ### Not yet implemented
 
-| Feature | Original API | Complexity | Description |
-|---------|-------------|------------|-------------|
-| Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | High | Upload animations to firmware for offline playback |
+All features from the original SDK have been implemented.
 
 ## Threading architecture
 
@@ -386,6 +385,12 @@ bool SMX_LightsAnimation_Load(const char *gif, int size, int pad, SMX_LightsType
 
 // Enable/disable automatic GIF animation playback at 30 FPS.
 void SMX_LightsAnimation_SetAuto(bool enable);
+
+// Prepare a GIF animation for upload to firmware EEPROM. GIF must be 23x24, max 32 frames.
+bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+// Begin uploading prepared animation data. Callback reports progress 0-100.
+void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, void *pUser);
 ```
 
 `pad` is 0 for player 1, 1 for player 2.

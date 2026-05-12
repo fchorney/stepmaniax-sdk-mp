@@ -652,3 +652,57 @@ TEST_CASE("Replay: panel animation lights commands in capture")
 
     SMX_Stop();
 }
+
+TEST_CASE("Replay: animation upload commands in capture")
+{
+    string sFile0 = CapturePath("animation_upload/device_0.smxhid");
+    if(!CaptureExists(sFile0))
+    {
+        MESSAGE("Capture not found: ", sFile0, " — skipping");
+        return;
+    }
+
+    auto pEnum = new ReplayHIDEnumerator();
+    pEnum->AddCapture(sFile0);
+
+    string sFile1 = CapturePath("animation_upload/device_1.smxhid");
+    if(CaptureExists(sFile1))
+        pEnum->AddCapture(sFile1);
+
+    bool bConnected = false;
+    SMX_StartWithEnumerator(
+        [](int, SMXUpdateCallbackReason reason, void *pUser) {
+            if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
+                *static_cast<bool *>(pUser) = true;
+        },
+        &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+
+    // Verify the capture contains upload ('m') and delay ('d') commands
+    auto &devs = pEnum->GetOpenedDevices();
+    REQUIRE(devs.size() >= 1);
+
+    auto &writes = devs[0]->GetExpectedWrites();
+    bool bFoundUpload = false, bFoundDelay = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == 'm') bFoundUpload = true;
+            if(cmd == 'd') bFoundDelay = true;
+        }
+    }
+
+    CHECK(bFoundUpload);
+    CHECK(bFoundDelay);
+
+    // Also verify re-enable auto lights at the end
+    CHECK(WritesContainCommand(devs[0]->GetExpectedWrites(), string("S 1\n", 4)));
+
+    MESSAGE("Animation upload commands verified: upload=", bFoundUpload, " delay=", bFoundDelay);
+
+    SMX_Stop();
+}

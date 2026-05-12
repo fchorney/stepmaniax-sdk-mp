@@ -9,7 +9,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -453,4 +456,349 @@ void SMXLightsAnimation_TemporaryStop()
         return;
     if(g_bAutoAnimating.load(memory_order_relaxed))
         g_fStopAnimatingUntil = SMX::GetMonotonicTime() + 0.1; // 100ms
+}
+
+// ---------------------------------------------------------------------------
+// Animation Upload
+// ---------------------------------------------------------------------------
+// Converts GIF animations to the firmware's 4-bit paletted format and generates
+// the upload command sequence for writing to panel EEPROM.
+
+namespace {
+
+// --- Firmware data structures ---
+
+#pragma pack(push, 1)
+struct fw_color_t { uint8_t rgb[3]; };
+struct fw_palette_t { fw_color_t colors[15]; };  // 45 bytes
+struct fw_graphic_t { uint8_t data[13]; };       // 25 pixels packed as 4-bit nibbles
+
+struct fw_panel_animation_data_t {
+    fw_graphic_t graphics[64];  // 832 bytes
+    fw_palette_t palettes[2];   // 90 bytes
+};                              // total: 922 bytes
+
+struct fw_animation_timing_t {
+    uint8_t loop_animation_frame;
+    uint8_t frames[64];  // graphic indices (0xFF = end/loop)
+    uint8_t delay[64];   // duration in 30FPS frame counts
+};                       // total: 129 bytes
+
+struct fw_upload_packet {
+    uint8_t cmd = 'm';
+    uint8_t panel = 0;
+    uint8_t animation_idx = 0;
+    uint8_t final_packet = 0;
+    uint16_t offset = 0;
+    uint8_t size = 0;
+    uint8_t data[240] = {};
+};
+
+struct fw_delay_packet {
+    uint8_t cmd = 'd';
+    uint16_t milliseconds = 0;
+};
+#pragma pack(pop)
+
+// --- Palette quantization ---
+
+// Find a color's index in the palette, or 0xFF if not found.
+static uint8_t FindColorInPalette(const fw_palette_t &pal, uint8_t r, uint8_t g, uint8_t b)
+{
+    for(int i = 0; i < 15; i++)
+        if(pal.colors[i].rgb[0] == r && pal.colors[i].rgb[1] == g && pal.colors[i].rgb[2] == b)
+            return i;
+    return 0xFF;
+}
+
+// Build a 15-color palette from all frames of a single panel's animation.
+// Returns false if more than 15 unique colors are used.
+static bool BuildPalette(const vector<PanelFrame> &frames, fw_palette_t &palette)
+{
+    memset(&palette, 0, sizeof(palette));
+    int nextColor = 0;
+
+    for(const auto &frame : frames)
+    {
+        for(int i = 0; i < frame.numLeds; i++)
+        {
+            uint8_t r = frame.rgb[i*3+0];
+            uint8_t g = frame.rgb[i*3+1];
+            uint8_t b = frame.rgb[i*3+2];
+
+            // Transparent (alpha=0 in the original) maps to index 15, skip it.
+            // We treat fully black as transparent for the upload path.
+            if(r == 0 && g == 0 && b == 0)
+                continue;
+
+            if(FindColorInPalette(palette, r, g, b) != 0xFF)
+                continue;
+
+            if(nextColor >= 15)
+                return false;
+
+            palette.colors[nextColor].rgb[0] = r;
+            palette.colors[nextColor].rgb[1] = g;
+            palette.colors[nextColor].rgb[2] = b;
+            nextColor++;
+        }
+    }
+    return true;
+}
+
+// Pack a single frame into a 4-bit graphic using the given palette.
+static void PackGraphic(const PanelFrame &frame, const fw_palette_t &palette, fw_graphic_t &out)
+{
+    memset(&out, 0, sizeof(out));
+    for(int i = 0; i < 25; i++)
+    {
+        uint8_t palIdx;
+        if(i >= frame.numLeds)
+        {
+            palIdx = 15; // transparent
+        }
+        else
+        {
+            uint8_t r = frame.rgb[i*3+0];
+            uint8_t g = frame.rgb[i*3+1];
+            uint8_t b = frame.rgb[i*3+2];
+            if(r == 0 && g == 0 && b == 0)
+                palIdx = 15; // transparent
+            else
+            {
+                palIdx = FindColorInPalette(palette, r, g, b);
+                if(palIdx == 0xFF) palIdx = 0; // shouldn't happen if BuildPalette succeeded
+            }
+        }
+
+        // Pack into nibbles: high nibble first.
+        if(i & 1)
+            out.data[i/2] |= (palIdx & 0x0F);
+        else
+            out.data[i/2] |= (palIdx & 0x0F) << 4;
+    }
+}
+
+// Convert frame durations to 30 FPS delay counts.
+static vector<uint8_t> ComputeFrameDelays(const vector<float> &durations)
+{
+    vector<uint8_t> delays;
+    for(float dur : durations)
+    {
+        int frames = max(1, (int)(dur * 30.0f + 0.5f));
+        delays.push_back((uint8_t)min(frames, 255));
+    }
+    return delays;
+}
+
+// Create upload packets for a block of data.
+static void CreateUploadPackets(vector<fw_upload_packet> &packets,
+    const void *data, int startOffset, int dataSize, uint8_t panel, uint8_t animIdx)
+{
+    const uint8_t *buf = (const uint8_t*)data;
+    for(int offset = 0; offset < dataSize; )
+    {
+        fw_upload_packet pkt;
+        pkt.panel = panel;
+        pkt.animation_idx = animIdx;
+        pkt.offset = startOffset + offset;
+        pkt.size = (uint8_t)min((int)sizeof(pkt.data), dataSize - offset);
+        memcpy(pkt.data, buf + offset, pkt.size);
+        packets.push_back(pkt);
+        offset += pkt.size;
+    }
+}
+
+// --- Upload state ---
+
+static vector<string> g_UploadCommands[2]; // [pad]
+static mutex g_UploadMutex;
+
+} // anonymous namespace
+
+// --- Public API ---
+
+SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, SMX_LightsType type, const char **error)
+{
+    static const char *sNoError = "";
+    if(!error) { static const char *dummy; error = &dummy; }
+    *error = sNoError;
+
+    if(!gif || size <= 0) { *error = "No GIF data provided."; return false; }
+    if(pad < 0 || pad > 1) { *error = "Invalid pad index."; return false; }
+    if(type != SMX_LightsType_Released && type != SMX_LightsType_Pressed)
+    { *error = "Invalid animation type."; return false; }
+
+    // Decode GIF.
+    vector<DecodedFrame> frames;
+    if(!DecodeGif(gif, size, frames))
+    { *error = "The GIF couldn't be read."; return false; }
+
+    // Only 23×24 (25-LED) is supported for firmware upload.
+    if(frames[0].width != 23 || frames[0].height != 24)
+    { *error = "Upload GIFs must be 23x24."; return false; }
+
+    // Max 32 frames per animation type.
+    if((int)frames.size() > 32)
+    { *error = "The animation has too many frames (max 32)."; return false; }
+
+    // Extract per-panel frames and detect loop frame.
+    int loopFrame = 0;
+    vector<PanelFrame> panelFrames[9];
+    vector<float> durations;
+
+    for(int f = 0; f < (int)frames.size(); f++)
+    {
+        // Check loop marker.
+        int markerIdx = (23 * 23 + 0) * 4; // bottom-left pixel
+        if(frames[f].rgba[markerIdx + 3] == 255 && frames[f].rgba[markerIdx + 0] >= 128)
+            if(loopFrame == 0) loopFrame = f;
+
+        durations.push_back(frames[f].duration);
+        for(int panel = 0; panel < 9; panel++)
+            panelFrames[panel].push_back(ExtractPanel(frames[f], panel));
+    }
+
+    // Build palette and pack graphics for each panel.
+    fw_panel_animation_data_t allPanelData[9];
+    memset(allPanelData, 0xFF, sizeof(allPanelData));
+
+    int firstGraphic = (type == SMX_LightsType_Released) ? 0 : 32;
+
+    for(int panel = 0; panel < 9; panel++)
+    {
+        fw_palette_t &palette = allPanelData[panel].palettes[type];
+        if(!BuildPalette(panelFrames[panel], palette))
+        {
+            static char sErrBuf[128];
+            snprintf(sErrBuf, sizeof(sErrBuf), "Panel %d uses too many colors (max 15).", panel);
+            *error = sErrBuf;
+            return false;
+        }
+
+        for(int f = 0; f < (int)panelFrames[panel].size(); f++)
+            PackGraphic(panelFrames[panel][f], palette, allPanelData[panel].graphics[firstGraphic + f]);
+
+        // Apply 0.6666 color scaling to palette (same as SetLights).
+        for(auto &color : palette.colors)
+            for(int c = 0; c < 3; c++)
+                color.rgb[c] = uint8_t(color.rgb[c] * 0.6666f);
+    }
+
+    // Build master timing data.
+    fw_animation_timing_t masterTiming;
+    memset(&masterTiming, 0xFF, sizeof(masterTiming));
+    masterTiming.loop_animation_frame = (uint8_t)loopFrame;
+    for(int f = 0; f < (int)frames.size(); f++)
+        masterTiming.frames[f] = firstGraphic + f;
+    vector<uint8_t> delays = ComputeFrameDelays(durations);
+    memset(masterTiming.delay, 0, sizeof(masterTiming.delay));
+    for(int f = 0; f < (int)delays.size(); f++)
+        masterTiming.delay[f] = delays[f];
+
+    // --- Generate upload command sequence ---
+
+    vector<string> commands;
+
+    auto addUploadCmd = [&](const fw_upload_packet &pkt) {
+        commands.emplace_back((const char*)&pkt, sizeof(pkt));
+    };
+    auto addDelay = [&](int ms) {
+        fw_delay_packet pkt;
+        pkt.milliseconds = (uint16_t)ms;
+        commands.emplace_back((const char*)&pkt, sizeof(pkt));
+    };
+
+    // Create per-panel upload packets.
+    vector<fw_upload_packet> packetsPerPanel[9];
+    for(int panel = 0; panel < 9; panel++)
+    {
+        // Upload the 32 graphics for this type.
+        const fw_graphic_t *graphics = &allPanelData[panel].graphics[firstGraphic];
+        int graphicsOffset = (int)(firstGraphic * sizeof(fw_graphic_t));
+        CreateUploadPackets(packetsPerPanel[panel], graphics, graphicsOffset,
+            sizeof(fw_graphic_t) * 32, panel, type);
+
+        // Upload the palette for this type.
+        const fw_palette_t *palette = &allPanelData[panel].palettes[type];
+        int paletteOffset = (int)(sizeof(fw_graphic_t) * 64 + type * sizeof(fw_palette_t));
+        CreateUploadPackets(packetsPerPanel[panel], palette, paletteOffset,
+            sizeof(fw_palette_t), panel, type);
+    }
+
+    // Interleave packets across panels with EEPROM write delays.
+    while(true)
+    {
+        bool addedAny = false;
+        int maxSize = 0;
+        for(int panel = 0; panel < 9; panel++)
+        {
+            if(packetsPerPanel[panel].empty())
+                continue;
+            fw_upload_packet pkt = packetsPerPanel[panel].back();
+            packetsPerPanel[panel].pop_back();
+            addUploadCmd(pkt);
+            maxSize = max(maxSize, (int)pkt.size);
+            addedAny = true;
+        }
+        if(!addedAny) break;
+        addDelay((int)(maxSize * 3.4f + 0.5f));
+    }
+
+    // Send panel data twice for reliability.
+    size_t panelDataEnd = commands.size();
+    commands.insert(commands.end(), commands.begin(), commands.begin() + panelDataEnd);
+
+    // Append master timing data with final_packet flag on last packet.
+    vector<fw_upload_packet> masterPackets;
+    CreateUploadPackets(masterPackets, &masterTiming, 0, sizeof(masterTiming), 0xFF, type);
+    masterPackets.back().final_packet = 1;
+    for(const auto &pkt : masterPackets)
+        addUploadCmd(pkt);
+
+    // Store for BeginUpload.
+    lock_guard<mutex> lock(g_UploadMutex);
+    g_UploadCommands[pad] = std::move(commands);
+
+    return true;
+}
+
+// Declared in SMX.cpp
+void SMX_SendCommandForPad(int pad, const std::string &cmd, std::function<void(std::string)> pComplete);
+
+SMX_API void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, void *pUser)
+{
+    if(pad < 0 || pad > 1) return;
+    if(!callback) return;
+
+    vector<string> commands;
+    {
+        lock_guard<mutex> lock(g_UploadMutex);
+        commands = g_UploadCommands[pad];
+    }
+
+    if(commands.empty())
+    {
+        callback(100, pUser);
+        return;
+    }
+
+    int iTotalCommands = (int)commands.size();
+
+    // Use a shared counter to track progress across async callbacks.
+    auto pCompleted = make_shared<atomic<int>>(0);
+
+    for(int i = 0; i < iTotalCommands; i++)
+    {
+        SMX_SendCommandForPad(pad, commands[i],
+            [i, iTotalCommands, pCompleted, callback, pUser](string) {
+                int iDone = pCompleted->fetch_add(1) + 1;
+                int progress;
+                if(iDone >= iTotalCommands)
+                    progress = 100;
+                else
+                    progress = min((iDone * 100) / iTotalCommands, 99);
+                callback(progress, pUser);
+            });
+    }
 }

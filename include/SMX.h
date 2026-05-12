@@ -495,6 +495,46 @@ SMX_API bool SMX_LightsAnimation_Load(const char *gif, int size, int pad, SMX_Li
 /// @param enable True to start automatic animation, false to stop.
 SMX_API void SMX_LightsAnimation_SetAuto(bool enable);
 
+/// Callback type for upload progress reporting.
+/// @param progress Progress value from 0 to 100. 100 indicates completion.
+/// @param pUser Application context pointer passed to SMX_LightsUpload_BeginUpload.
+typedef void SMX_LightsUploadCallback(int progress, void *pUser);
+
+/// Prepare an animation upload from a GIF file.
+///
+/// This converts the GIF into the firmware's internal format (4-bit paletted packed
+/// sprites) and generates the upload command sequence. The GIF must be 23×24 pixels
+/// (25-LED mode, the only format supported for firmware upload).
+///
+/// Both animation types (released and pressed) should be prepared before calling
+/// BeginUpload. Each call to PrepareUpload replaces any previously prepared data
+/// for that pad/type combination.
+///
+/// @param gif Pointer to raw GIF file data.
+/// @param size Size of the GIF data in bytes.
+/// @param pad Pad index (0 or 1).
+/// @param type Which animation slot to prepare (released or pressed).
+/// @param error [out] On failure, set to a static error string.
+/// @return True on success, false on error.
+SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, SMX_LightsType type, const char **error);
+
+/// Begin uploading prepared animation data to the pad's firmware.
+///
+/// This queues all upload commands for the specified pad. The callback is invoked
+/// as each command completes, with progress values from 0 to 100. The callback
+/// will always be called exactly once with progress=100 when the upload finishes
+/// (even if the pad disconnects mid-upload).
+///
+/// The callback is invoked from the I/O thread. It should return quickly.
+///
+/// Both animation types should be prepared via SMX_LightsUpload_PrepareUpload
+/// before calling this function.
+///
+/// @param pad Pad index (0 or 1).
+/// @param callback Progress callback function.
+/// @param pUser Application context pointer passed to the callback.
+SMX_API void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback callback, void *pUser);
+
 /// Information about a connected SMX device.
 /// This structure holds the current connection state and device metadata.
 /// Query it with SMX_GetInfo() to detect devices and retrieve their properties.

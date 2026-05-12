@@ -955,3 +955,106 @@ TEST_CASE("Real hardware: panel animation playback from GIF")
 
     SMX_Stop();
 }
+
+TEST_CASE("Real hardware: animation upload to firmware")
+{
+    int iDeviceCount = DetectHardware();
+    if(iDeviceCount == 0) { MESSAGE("No SMX hardware detected, skipping"); return; }
+
+    atomic<int> iConnected{0};
+    REQUIRE(StartWithRecording("animation_upload", iConnected, iDeviceCount));
+
+    // Verify firmware v4+ (required for upload)
+    SMXInfo info;
+    SMX_GetInfo(0, &info);
+    REQUIRE(info.m_bConnected);
+    if(info.m_iFirmwareVersion < 4)
+    {
+        MESSAGE("Firmware v4+ required for animation upload, skipping (fw=", info.m_iFirmwareVersion, ")");
+        SMX_Stop();
+        return;
+    }
+
+    // --- Generate a simple 23x24 animated GIF (3 frames: red, green, blue) ---
+    const int W = 23, H = 24;
+    vector<uint8_t> gif;
+    auto pb = [&](uint8_t b) { gif.push_back(b); };
+    auto p16 = [&](uint16_t v) { gif.push_back(v & 0xFF); gif.push_back(v >> 8); };
+
+    // Header + LSD with 8-color GCT
+    const char *hdr = "GIF89a";
+    gif.insert(gif.end(), hdr, hdr + 6);
+    p16(W); p16(H);
+    pb(0x82); pb(0); pb(0); // GCT flag, 8 colors
+    uint8_t colors[8][3] = {{255,0,0},{0,255,0},{0,0,255},{0,0,0},{0,0,0},{0,0,0},{0,0,0},{0,0,0}};
+    for(int i = 0; i < 8; i++) { pb(colors[i][0]); pb(colors[i][1]); pb(colors[i][2]); }
+
+    // NETSCAPE loop
+    pb(0x21); pb(0xFF); pb(11);
+    const char *ns = "NETSCAPE2.0";
+    gif.insert(gif.end(), ns, ns + 11);
+    pb(3); pb(1); p16(0); pb(0);
+
+    // 3 frames at 500ms each
+    for(int f = 0; f < 3; f++)
+    {
+        pb(0x21); pb(0xF9); pb(4); pb(0); p16(50); pb(0); pb(0); // GCE: 500ms
+        pb(0x2C); p16(0); p16(0); p16(W); p16(H); pb(0);
+        pb(3); // LZW min code size
+        int total = W * H;
+        vector<uint8_t> lzw;
+        int bits = 0, bc = 0, cs = 4;
+        auto emit = [&](int code) { bits |= (code << bc); bc += cs; while(bc >= 8) { lzw.push_back(bits & 0xFF); bits >>= 8; bc -= 8; } };
+        emit(8); // clear
+        int since = 0;
+        for(int i = 0; i < total; i++) { emit(f); since++; if(since >= 5) { emit(8); since = 0; } }
+        emit(9); // end
+        if(bc > 0) lzw.push_back(bits & 0xFF);
+        for(size_t i = 0; i < lzw.size(); ) { size_t bs = min((size_t)255, lzw.size() - i); pb((uint8_t)bs); gif.insert(gif.end(), lzw.begin() + i, lzw.begin() + i + bs); i += bs; }
+        pb(0);
+    }
+    pb(0x3B);
+
+    MESSAGE("Generated 3-frame upload GIF (", gif.size(), " bytes)");
+
+    // --- Prepare and upload ---
+    const char *error = nullptr;
+    bool bPrepared = SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(),
+                                                     0, SMX_LightsType_Released, &error);
+    REQUIRE(bPrepared);
+    MESSAGE("Prepared released animation for upload");
+
+    // Begin upload with progress tracking
+    struct UploadState {
+        atomic<int> lastProgress{0};
+        atomic<bool> complete{false};
+    } state;
+
+    SMX_LightsUpload_BeginUpload(0,
+        [](int progress, void *pUser) {
+            auto *s = static_cast<UploadState*>(pUser);
+            s->lastProgress.store(progress);
+            if(progress >= 100)
+                s->complete.store(true);
+        }, &state);
+
+    // Wait for upload to complete (may take several seconds due to EEPROM delays)
+    bool bCompleted = WaitFor([&]() { return state.complete.load(); }, 30000);
+    CHECK(bCompleted);
+    MESSAGE("Upload completed, final progress: ", state.lastProgress.load());
+
+    // Give the firmware a moment to apply the animation
+    this_thread::sleep_for(chrono::seconds(3));
+    MESSAGE("Animation should be playing on pad (red -> green -> blue cycle)");
+
+    // Verify still connected
+    SMX_GetInfo(0, &info);
+    CHECK(info.m_bConnected);
+
+    // Restore normal behavior
+    SMX_ReenableAutoLights();
+    this_thread::sleep_for(chrono::milliseconds(500));
+    MESSAGE("Re-enabled auto lights to restore normal behavior");
+
+    SMX_Stop();
+}

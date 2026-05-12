@@ -264,3 +264,47 @@ TEST_CASE("SMX_LightsAnimation_SetAuto double disable is safe") {
     SMX_LightsAnimation_SetAuto(false);
     SMX_LightsAnimation_SetAuto(false); // should be no-op
 }
+
+// =========================================================================
+// SMX_LightsUpload_PrepareUpload tests
+// =========================================================================
+
+TEST_CASE("SMX_LightsUpload_PrepareUpload rejects null data") {
+    const char *error = nullptr;
+    CHECK_FALSE(SMX_LightsUpload_PrepareUpload(nullptr, 0, 0, SMX_LightsType_Released, &error));
+    CHECK(string(error).find("No GIF") != string::npos);
+}
+
+TEST_CASE("SMX_LightsUpload_PrepareUpload rejects 14x15 GIF") {
+    auto gif = MakeSolidGif(14, 15, 255, 0, 0);
+    const char *error = nullptr;
+    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+    CHECK(string(error).find("23x24") != string::npos);
+}
+
+TEST_CASE("SMX_LightsUpload_PrepareUpload accepts 23x24 GIF") {
+    auto gif = MakeSolidGif(23, 24, 255, 0, 0);
+    const char *error = nullptr;
+    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 0, SMX_LightsType_Released, &error));
+}
+
+TEST_CASE("SMX_LightsUpload_PrepareUpload accepts pressed type") {
+    auto gif = MakeSolidGif(23, 24, 0, 255, 0);
+    const char *error = nullptr;
+    CHECK(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 1, SMX_LightsType_Pressed, &error));
+}
+
+TEST_CASE("SMX_LightsUpload_PrepareUpload rejects invalid pad") {
+    auto gif = MakeSolidGif(23, 24, 255, 0, 0);
+    const char *error = nullptr;
+    CHECK_FALSE(SMX_LightsUpload_PrepareUpload((const char*)gif.data(), gif.size(), 2, SMX_LightsType_Released, &error));
+}
+
+TEST_CASE("SMX_LightsUpload_BeginUpload calls callback with 100 when no data prepared") {
+    int progress = -1;
+    SMX_LightsUpload_BeginUpload(0, [](int p, void *pUser) {
+        *static_cast<int*>(pUser) = p;
+    }, &progress);
+    // With no SDK running and no prepared data, should immediately call with 100
+    CHECK(progress == 100);
+}

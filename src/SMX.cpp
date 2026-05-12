@@ -1463,6 +1463,15 @@ SMX_API double SMX_GetMonotonicTime()
 // Test-only API (not exported from shared library, linked directly in tests)
 // ---------------------------------------------------------------------------
 
+/// Sends a command to a specific pad. Used by SMXPanelAnimation.cpp for upload.
+void SMX_SendCommandForPad(int pad, const std::string &cmd, std::function<void(std::string)> pComplete)
+{
+    if(!g_pSMX) { if(pComplete) pComplete(""); return; }
+    auto *dev = g_pSMX->GetDevice(pad);
+    if(!dev) { if(pComplete) pComplete(""); return; }
+    dev->SendCommand(cmd, pComplete);
+}
+
 /// Starts the SDK with a custom HID enumerator for testing.
 /// This allows tests to inject fake devices without real hardware.
 void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser, std::unique_ptr<SMX::IHIDEnumerator> pEnumerator)
