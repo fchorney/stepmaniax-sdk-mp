@@ -43,7 +43,8 @@ SMX_API void SMX_Start(SMXUpdateCallback callback, void *pUser)
     }
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
-        callback(pad, reason, pUser);
+        if(callback)
+            callback(pad, reason, pUser);
     };
     g_pSMX = make_unique<SMXManager>(cb);
 }
@@ -201,7 +202,8 @@ void SMX_StartWithEnumerator(SMXUpdateCallback callback, void *pUser, std::uniqu
     if(g_pSMX) return;
 
     auto cb = [callback, pUser](const int pad, const SMXUpdateCallbackReason reason) {
-        callback(pad, reason, pUser);
+        if(callback)
+            callback(pad, reason, pUser);
     };
     g_pSMX = make_unique<SMXManager>(cb, std::move(pEnumerator));
 }

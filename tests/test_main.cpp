@@ -51,6 +51,25 @@ TEST_CASE("SMX_SetLogCallback with nullptr disables custom logging") {
     SMX_Stop();
 }
 
+TEST_CASE("SMX_Start with nullptr callback does not crash") {
+    using namespace SMXTestHelpers;
+
+    auto *pFake = new FakeDevice();
+    pFake->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFake->SetConfigResponse(MakeConfigResponse());
+
+    auto pEnum = std::make_unique<FakeHIDEnumerator>();
+    pEnum->AddDevice("/dev/fake0", pFake);
+
+    SMX_StartWithEnumerator(nullptr, nullptr, std::move(pEnum));
+
+    // Give the manager time to discover the device and fire the callback.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    SMX_Stop();
+    delete pFake;
+}
+
 #ifndef _WIN32
 TEST_CASE("SMX_Stop from callback aborts") {
     // Fork a child process that calls SMX_Stop from within the update callback.
