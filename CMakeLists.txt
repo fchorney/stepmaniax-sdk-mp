@@ -26,47 +26,50 @@ if(APPLE)
 endif()
 
 # Find hidapi
-# On Windows with vcpkg, skip pkg-config and use find_package directly.
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND AND NOT WIN32)
-    pkg_check_modules(HIDAPI hidapi-hidraw)
-    if(NOT HIDAPI_FOUND)
-        pkg_check_modules(HIDAPI hidapi-libusb)
-    endif()
-    if(NOT HIDAPI_FOUND)
-        pkg_check_modules(HIDAPI hidapi)
-    endif()
-endif()
-
+# If the parent project already set HIDAPI_FOUND, skip the search entirely.
 if(NOT HIDAPI_FOUND)
-    find_package(hidapi CONFIG REQUIRED)
-    # vcpkg provides platform-specific targets: hidapi::winapi (Windows), hidapi::hidraw or hidapi::libusb (Linux)
-    # hidapi::include is an interface target that carries the include directories.
-    if(TARGET hidapi::winapi)
-        set(HIDAPI_LIBRARIES hidapi::winapi)
-    elseif(TARGET hidapi::hidapi)
-        set(HIDAPI_LIBRARIES hidapi::hidapi)
-    elseif(TARGET hidapi::hidraw)
-        set(HIDAPI_LIBRARIES hidapi::hidraw)
-    elseif(TARGET hidapi::libusb)
-        set(HIDAPI_LIBRARIES hidapi::libusb)
+    # On Windows with vcpkg, skip pkg-config and use find_package directly.
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND AND NOT WIN32)
+        pkg_check_modules(HIDAPI hidapi-hidraw)
+        if(NOT HIDAPI_FOUND)
+            pkg_check_modules(HIDAPI hidapi-libusb)
+        endif()
+        if(NOT HIDAPI_FOUND)
+            pkg_check_modules(HIDAPI hidapi)
+        endif()
+    endif()
+
+    if(NOT HIDAPI_FOUND)
+        find_package(hidapi CONFIG REQUIRED)
+        # vcpkg provides platform-specific targets: hidapi::winapi (Windows), hidapi::hidraw or hidapi::libusb (Linux)
+        # hidapi::include is an interface target that carries the include directories.
+        if(TARGET hidapi::winapi)
+            set(HIDAPI_LIBRARIES hidapi::winapi)
+        elseif(TARGET hidapi::hidapi)
+            set(HIDAPI_LIBRARIES hidapi::hidapi)
+        elseif(TARGET hidapi::hidraw)
+            set(HIDAPI_LIBRARIES hidapi::hidraw)
+        elseif(TARGET hidapi::libusb)
+            set(HIDAPI_LIBRARIES hidapi::libusb)
+        else()
+            message(FATAL_ERROR "hidapi found but no known target available")
+        endif()
+        if(TARGET hidapi::include)
+            list(APPEND HIDAPI_LIBRARIES hidapi::include)
+        endif()
+        # find_package should provide include dirs via targets, but as a fallback find them explicitly
+        find_path(HIDAPI_INCLUDE_DIRS hidapi/hidapi.h)
+        if(NOT HIDAPI_INCLUDE_DIRS)
+            set(HIDAPI_INCLUDE_DIRS "")
+        endif()
     else()
-        message(FATAL_ERROR "hidapi found but no known target available")
+        # When pkg-config finds hidapi, HIDAPI_INCLUDE_DIRS points to the hidapi subdirectory,
+        # but we need the parent directory since code does #include <hidapi/hidapi.h>
+        get_filename_component(HIDAPI_INCLUDE_DIRS_PARENT "${HIDAPI_INCLUDE_DIRS}" DIRECTORY)
+        set(HIDAPI_INCLUDE_DIRS "${HIDAPI_INCLUDE_DIRS_PARENT}")
     endif()
-    if(TARGET hidapi::include)
-        list(APPEND HIDAPI_LIBRARIES hidapi::include)
-    endif()
-    # find_package should provide include dirs via targets, but as a fallback find them explicitly
-    find_path(HIDAPI_INCLUDE_DIRS hidapi/hidapi.h)
-    if(NOT HIDAPI_INCLUDE_DIRS)
-        set(HIDAPI_INCLUDE_DIRS "")
-    endif()
-else()
-    # When pkg-config finds hidapi, HIDAPI_INCLUDE_DIRS points to the hidapi subdirectory,
-    # but we need the parent directory since code does #include <hidapi/hidapi.h>
-    get_filename_component(HIDAPI_INCLUDE_DIRS_PARENT "${HIDAPI_INCLUDE_DIRS}" DIRECTORY)
-    set(HIDAPI_INCLUDE_DIRS "${HIDAPI_INCLUDE_DIRS_PARENT}")
-endif()
+endif() # NOT HIDAPI_FOUND
 
 # Library (shared by default; use -DBUILD_SHARED_LIBS=OFF for static)
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
