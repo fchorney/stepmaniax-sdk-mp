@@ -806,7 +806,7 @@ SMX_API void SMX_LightsUpload_BeginUpload(int pad, SMX_LightsUploadCallback call
     for(int i = 0; i < iTotalCommands; i++)
     {
         SMX_SendCommandForPad(pad, commands[i],
-            [i, iTotalCommands, pCompleted, callback, pUser](string) {
+            [iTotalCommands, pCompleted, callback, pUser](string) {
                 int iDone = pCompleted->fetch_add(1) + 1;
                 int progress;
                 if(iDone >= iTotalCommands)
