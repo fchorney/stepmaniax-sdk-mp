@@ -23,7 +23,7 @@ A cross-platform SDK for StepManiaX dance pads, fully re-implemented from the gr
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [Reporting Issues](#reporting-issues)
-- [Future Projects](#future-projects)
+- [Projects Using This Library](#projects-using-this-library)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
 
@@ -728,9 +728,9 @@ SMX_CAPTURE_DIR=/tmp/captures ./your-application
 
 Note: HID traffic recording is built into the shared library. Set the `SMX_CAPTURE_DIR` environment variable before launching any application using the SDK and it will automatically record all HID traffic to timestamped `.smxhid` files in that directory.
 
-## Future Projects
+## Projects Using This Library
 
-- **GIF animation editor** - a GUI tool for creating and previewing GIF animations that conform to the SMX panel format (correct dimensions, panel grid layout, color limits, loop frame markers)
+- **[StepManiaX GIF Maker](https://github.com/fchorney/stepmaniax-gif-maker)** - a cross-platform pixel editor for creating, editing, previewing, and uploading animated LED GIFs to StepManiaX dance pads
 
 ## Acknowledgments
 
