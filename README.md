@@ -731,6 +731,7 @@ Note: HID traffic recording is built into the shared library. Set the `SMX_CAPTU
 ## Projects Using This Library
 
 - **[StepManiaX GIF Maker](https://github.com/fchorney/stepmaniax-gif-maker)** - a cross-platform pixel editor for creating, editing, previewing, and uploading animated LED GIFs to StepManiaX dance pads
+- **[RustManiaX SDK](https://github.com/fchorney/rustmaniax-sdk)** - a Rust port of this SDK.
 
 ## Acknowledgments
 
