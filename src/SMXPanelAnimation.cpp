@@ -683,7 +683,7 @@ SMX_API bool SMX_LightsUpload_PrepareUpload(const char *gif, int size, int pad, 
         fw_palette_t &palette = allPanelData[panel].palettes[type];
         if(!BuildPalette(panelFrames[panel], palette))
         {
-            static char sErrBuf[128];
+            static thread_local char sErrBuf[128];
             snprintf(sErrBuf, sizeof(sErrBuf), "Panel %d uses too many colors (max 15).", panel);
             *error = sErrBuf;
             return false;
