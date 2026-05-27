@@ -265,7 +265,7 @@ AnimationPlaybackState g_PlaybackState[2][2][9]; // [pad][type][panel]
 atomic<bool> g_bAutoAnimating{false};
 thread g_AnimThread;
 atomic<bool> g_bAnimShutdown{false};
-double g_fStopAnimatingUntil = 0;
+atomic<double> g_fStopAnimatingUntil{0};
 
 // --- Animation Thread ---
 
@@ -279,7 +279,7 @@ void AnimationThreadMain()
         auto tFrameStart = chrono::steady_clock::now();
 
         // Check if temporarily paused (SMX_SetLights2 was called directly).
-        if(SMX::GetMonotonicTime() < g_fStopAnimatingUntil)
+        if(SMX::GetMonotonicTime() < g_fStopAnimatingUntil.load(memory_order_relaxed))
         {
             this_thread::sleep_for(chrono::milliseconds(iFrameMs));
             continue;
@@ -468,7 +468,7 @@ SMX_API void SMX_LightsAnimation_SetAuto(bool enable)
 void SMXLightsAnimation_TemporaryStop()
 {
     if(g_bAutoAnimating.load(memory_order_relaxed))
-        g_fStopAnimatingUntil = SMX::GetMonotonicTime() + ANIMATION_PAUSE_DURATION;
+        g_fStopAnimatingUntil.store(SMX::GetMonotonicTime() + ANIMATION_PAUSE_DURATION, memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------
