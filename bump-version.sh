@@ -26,7 +26,9 @@ if [ "$OLD" = "$NEW" ]; then
     exit 0
 fi
 
-sed -i "s/VERSION $OLD/VERSION $NEW/" CMakeLists.txt
-sed -i "s/$OLD/$NEW/g" include/SMX.h
+# Use the `-i.bak` suffix form, which both GNU sed (Linux) and BSD sed (macOS)
+# accept, then remove the backups. (Bare `-i` is GNU-only and errors on macOS.)
+sed -i.bak "s/VERSION $OLD/VERSION $NEW/" CMakeLists.txt && rm -f CMakeLists.txt.bak
+sed -i.bak "s/$OLD/$NEW/g" include/SMX.h && rm -f include/SMX.h.bak
 
 echo "$OLD -> $NEW"
