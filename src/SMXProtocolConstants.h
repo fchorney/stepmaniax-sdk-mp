@@ -3,18 +3,20 @@
 
 #include <cstdint>
 
-// USB device identification.
-static constexpr uint16_t SMX_USB_VENDOR_ID  = 0x2341;
-static constexpr uint16_t SMX_USB_PRODUCT_ID = 0x8037;
+#include "SMX.h"  // public source of truth for the hardware-shape constants below
+
+// USB device identification. (SMX_USB_VENDOR_ID / SMX_USB_PRODUCT_ID are public
+// macros from SMX.h.)
 #define SMX_USB_PRODUCT_STRING L"StepManiaX"
 
-// Panel and LED geometry.
-static constexpr int NUM_PANELS             = 9;    // Panels per pad (3×3 grid)
-static constexpr int LEDS_PER_PANEL_16      = 16;   // Outer 4×4 grid only (legacy)
-static constexpr int LEDS_PER_PANEL_25      = 25;   // Outer 4×4 + inner 3×3 (firmware v4+)
-static constexpr int PLATFORM_STRIP_LEDS    = 44;   // LEDs in the platform edge strip per pad
-static constexpr int BYTES_PER_PAD_16       = NUM_PANELS * LEDS_PER_PANEL_16 * 3;  // 432
-static constexpr int BYTES_PER_PAD_25       = NUM_PANELS * LEDS_PER_PANEL_25 * 3;  // 675
+// Panel and LED geometry — internal aliases of the public SMX_* constants, so
+// the existing unprefixed names keep working without duplicating the values.
+static constexpr int NUM_PANELS             = SMX_NUM_PANELS;
+static constexpr int LEDS_PER_PANEL_16      = SMX_LEDS_PER_PANEL_16;
+static constexpr int LEDS_PER_PANEL_25      = SMX_LEDS_PER_PANEL_25;
+static constexpr int PLATFORM_STRIP_LEDS    = SMX_PLATFORM_STRIP_LEDS;
+static constexpr int BYTES_PER_PAD_16       = SMX_BYTES_PER_PAD_16;  // 432
+static constexpr int BYTES_PER_PAD_25       = SMX_BYTES_PER_PAD_25;  // 675
 
 // Color scaling applied to all LED values before sending to the device.
 // Values above ~170 don't make LEDs brighter; this improves contrast and reduces power draw.

@@ -20,6 +20,23 @@
 
 #define SERIAL_SIZE 16
 
+// ---------------------------------------------------------------------------
+// Hardware-shape constants
+//
+// Stable facts about the pads that consumers need to size light buffers or
+// enumerate devices without hardcoding magic numbers. These are the public
+// source of truth; the internal SMXProtocolConstants.h derives from them.
+// (Wire/protocol internals — packet flags, timeouts, report IDs — stay private.)
+// ---------------------------------------------------------------------------
+#define SMX_NUM_PANELS          9   // Panels per pad (3x3 grid)
+#define SMX_LEDS_PER_PANEL_16   16  // Outer 4x4 grid only (legacy)
+#define SMX_LEDS_PER_PANEL_25   25  // Outer 4x4 + inner 3x3 (firmware v4+)
+#define SMX_PLATFORM_STRIP_LEDS 44  // LEDs in the platform edge strip per pad
+#define SMX_BYTES_PER_PAD_16    (SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_16 * 3)  // 432
+#define SMX_BYTES_PER_PAD_25    (SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_25 * 3)  // 675
+#define SMX_USB_VENDOR_ID       0x2341
+#define SMX_USB_PRODUCT_ID      0x8037
+
 struct SMXInfo;
 
 /// Bits for SMXConfig::flags (masterVersion >= 4).
