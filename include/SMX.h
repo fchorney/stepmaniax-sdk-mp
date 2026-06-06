@@ -331,16 +331,6 @@ SMX_API void SMX_SetLights(const char lightData[864]);
 /// @param pLightData Pointer to 264 bytes of RGB data (88 LEDs × 3 bytes each).
 SMX_API void SMX_SetPlatformLights(const char *pLightData);
 
-/// Lights every panel of each pad a single solid RGB color, or turns a pad off
-/// with a NULL pointer. Each color is 3 bytes (R,G,B). Indexed by slot: p1Rgb =
-/// slot 0 (P1), p2Rgb = slot 1 (P2). Useful for a static indicator, e.g. marking
-/// which physical pad is assigned to which player. Like SMX_SetLights2, this
-/// pauses any running animation; re-send periodically to hold the color.
-///
-/// @param p1Rgb 3 RGB bytes for pad slot 0, or NULL to leave it off.
-/// @param p2Rgb 3 RGB bytes for pad slot 1, or NULL to leave it off.
-SMX_API void SMX_SetSolidLights(const char *p1Rgb, const char *p2Rgb);
-
 /// Panel-side diagnostic test modes.
 /// These activate debug lighting on the panels and don't return data to the host.
 /// Lights cannot be updated while a panel test mode is active.

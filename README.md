@@ -75,7 +75,6 @@ All features from the original StepManiaX SDK have been implemented, plus severa
 | Input state callback mode | `SMX_SetInputStateMode` | Fire callback on every packet or only on state change |
 | Monotonic time | `SMX_GetMonotonicTime` | High-resolution elapsed time for timestamps |
 | Pad → player assignment | `SMX_SetPlayerAssignment` | Pin pad serials to slots, overriding the P1/P2 jumper (orders two pads that share a jumper, or swaps pads on the wrong sides) |
-| Solid indicator lights | `SMX_SetSolidLights` | Light each pad a single solid RGB color by slot (e.g. mark which pad is which player) |
 
 ## Threading Architecture
 
