@@ -36,6 +36,7 @@
 #define SMX_BYTES_PER_PAD_25    (SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_25 * 3)  // 675
 #define SMX_USB_VENDOR_ID       0x2341
 #define SMX_USB_PRODUCT_ID      0x8037
+#define SMX_USB_PRODUCT_STRING  L"StepManiaX"  // USB product name (disambiguates the shared Arduino VID)
 
 struct SMXInfo;
 

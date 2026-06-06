@@ -5,9 +5,8 @@
 
 #include "SMX.h"  // public source of truth for the hardware-shape constants below
 
-// USB device identification. (SMX_USB_VENDOR_ID / SMX_USB_PRODUCT_ID are public
-// macros from SMX.h.)
-#define SMX_USB_PRODUCT_STRING L"StepManiaX"
+// USB device identification (SMX_USB_VENDOR_ID / SMX_USB_PRODUCT_ID /
+// SMX_USB_PRODUCT_STRING are public macros from SMX.h).
 
 // Panel and LED geometry — internal aliases of the public SMX_* constants, so
 // the existing unprefixed names keep working without duplicating the values.
