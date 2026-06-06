@@ -140,6 +140,27 @@ struct ColorScaleTable {
 static const ColorScaleTable g_ColorScale;
 } // anonymous namespace
 
+void SMXManager::SetSolidLights(const char *pP1Rgb, const char *pP2Rgb)
+{
+    // A full 25-LED-per-pad frame (9 panels x 25 LEDs x 3). Firmware on 16-LED
+    // pads simply ignores the inner-ring bytes, so one buffer covers both.
+    char aBuf[2 * BYTES_PER_PAD_25] = {0};
+    const char *apColors[2] = { pP1Rgb, pP2Rgb };
+    for(int iPad = 0; iPad < 2; iPad++)
+    {
+        if(apColors[iPad] == nullptr)
+            continue;
+        const int iBase = iPad * BYTES_PER_PAD_25;
+        for(int i = 0; i < BYTES_PER_PAD_25; i += 3)
+        {
+            aBuf[iBase + i + 0] = apColors[iPad][0];
+            aBuf[iBase + i + 1] = apColors[iPad][1];
+            aBuf[iBase + i + 2] = apColors[iPad][2];
+        }
+    }
+    SetLights(aBuf, sizeof(aBuf));
+}
+
 void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 {
     lock_guard<recursive_mutex> lock(m_Lock);

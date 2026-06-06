@@ -60,6 +60,12 @@ public:
     /// Sets panel LED colors for both pads. Data is split per-pad internally.
     void SetLights(const char *pLightData, int iLightDataSize);
 
+    /// Lights every panel of each pad a single solid RGB color, or turns a pad
+    /// off with a null pointer. Each color is 3 bytes (R,G,B). Indexed by slot:
+    /// pP1Rgb = slot 0 (P1), pP2Rgb = slot 1 (P2). Useful for a static indicator,
+    /// e.g. marking which physical pad is assigned to which player.
+    void SetSolidLights(const char *pP1Rgb, const char *pP2Rgb);
+
     void SetPanelTestMode(PanelTestMode mode);
     void SetInputStateMode(bool bAlwaysFire);
 

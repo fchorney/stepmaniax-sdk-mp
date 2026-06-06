@@ -147,6 +147,11 @@ SMX_API void SMX_SetPlatformLights(const char *pLightData)
     g_pSMX->SetPlatformLights(pLightData);
 }
 
+SMX_API void SMX_SetSolidLights(const char *p1Rgb, const char *p2Rgb)
+{
+    if(g_pSMX) g_pSMX->SetSolidLights(p1Rgb, p2Rgb);
+}
+
 SMX_API void SMX_SetPanelTestMode(PanelTestMode mode)
 {
     if(g_pSMX) g_pSMX->SetPanelTestMode(mode);
