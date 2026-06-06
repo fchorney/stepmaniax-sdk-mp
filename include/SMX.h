@@ -20,6 +20,24 @@
 
 #define SERIAL_SIZE 16
 
+// ---------------------------------------------------------------------------
+// Hardware-shape constants
+//
+// Stable facts about the pads that consumers need to size light buffers or
+// enumerate devices without hardcoding magic numbers. These are the public
+// source of truth; the internal SMXProtocolConstants.h derives from them.
+// (Wire/protocol internals — packet flags, timeouts, report IDs — stay private.)
+// ---------------------------------------------------------------------------
+#define SMX_NUM_PANELS          9   // Panels per pad (3x3 grid)
+#define SMX_LEDS_PER_PANEL_16   16  // Outer 4x4 grid only (legacy)
+#define SMX_LEDS_PER_PANEL_25   25  // Outer 4x4 + inner 3x3 (firmware v4+)
+#define SMX_PLATFORM_STRIP_LEDS 44  // LEDs in the platform edge strip per pad
+#define SMX_BYTES_PER_PAD_16    (SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_16 * 3)  // 432
+#define SMX_BYTES_PER_PAD_25    (SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_25 * 3)  // 675
+#define SMX_USB_VENDOR_ID       0x2341
+#define SMX_USB_PRODUCT_ID      0x8037
+#define SMX_USB_PRODUCT_STRING  L"StepManiaX"  // USB product name (disambiguates the shared Arduino VID)
+
 struct SMXInfo;
 
 /// Bits for SMXConfig::flags (masterVersion >= 4).
@@ -253,6 +271,18 @@ SMX_API uint16_t SMX_GetInputState(int pad);
 /// Note: Devices without a serial number show a hex string of all zeros or all F's.
 SMX_API void SMX_SetSerialNumbers();
 
+/// Pins pad serials to player slots (p1Serial -> slot 0, p2Serial -> slot 1),
+/// overriding the hardware P1/P2 jumper when ordering the two slots. This is the
+/// only way to order two pads that share a jumper, or to swap pads installed on
+/// the wrong sides.
+///
+/// The override only takes effect when both connected pads' serials are exactly
+/// the two given serials; otherwise (no override, a single pad, or an unrecognized
+/// serial) ordering falls back to the jumper. Pass NULL or "" for a side to clear
+/// the override. Applies immediately, firing Connected callbacks for any slot
+/// whose occupant changed — no reconnect required.
+SMX_API void SMX_SetPlayerAssignment(const char *p1Serial, const char *p2Serial);
+
 /// Resets a pad to its factory default configuration.
 /// This sends a reset command to the device and re-reads the resulting configuration.
 /// The operation is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire
@@ -440,7 +470,7 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 SMX_API void SMX_SetInputStateMode(bool bAlwaysFire);
 
 /// Returns the SDK version string.
-/// @return C-string containing the version (e.g., "1.0.2").
+/// @return C-string containing the version (e.g., "1.1.0").
 SMX_API const char *SMX_Version();
 
 /// Returns the elapsed time in seconds since the SDK was initialized.

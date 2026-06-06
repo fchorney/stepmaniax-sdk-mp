@@ -499,18 +499,57 @@ void SMXManager::AttemptConnections()
     }
 }
 
+// Decide ordering from a user-pinned serial->slot assignment.
+//
+// Returns 0 (leave) or 1 (swap) only when an assignment is set, both pads are
+// connected, and both their serials are exactly the two assigned serials — the
+// override then forces that order regardless of jumper. Returns -1 (defer to
+// jumper ordering) when there is no assignment, only one pad is connected, or a
+// connected pad's serial isn't part of the assignment.
+int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1)
+{
+    const std::string &sP1 = asAssignment[0];
+    const std::string &sP2 = asAssignment[1];
+    if(sP1.empty() || sP2.empty())
+        return -1;
+    // Lone pad keeps jumper behavior; the override only orders a known pair.
+    if(!info0.m_bConnected || !info1.m_bConnected)
+        return -1;
+    const std::string s0 = info0.m_Serial;
+    const std::string s1 = info1.m_Serial;
+    if(s0 == sP1 && s1 == sP2)
+        return 0; // already in the desired order
+    if(s0 == sP2 && s1 == sP1)
+        return 1; // pads are swapped relative to the assignment
+    return -1;    // a serial isn't covered by the assignment -> jumper fallback
+}
+
 bool SMXManager::CorrectDeviceOrder()
 {
     SMXInfo info[2];
     m_Devices[0].GetInfoLocked(info[0]);
     m_Devices[1].GetInfoLocked(info[1]);
 
-    if(info[0].m_bConnected && info[1].m_bConnected &&
-       m_Devices[0].IsPlayer2Locked() == m_Devices[1].IsPlayer2Locked())
-        return false;
+    bool bSwap;
+    const int iOverride = GetOverrideSwap(m_asPlayerAssignment, info[0], info[1]);
+    if(iOverride != -1)
+    {
+        // User-pinned serial->slot assignment covers both pads: order by it,
+        // ignoring the jumper (this is the only path that can order two pads
+        // that share a jumper).
+        bSwap = (iOverride == 1);
+    }
+    else
+    {
+        // No applicable override: fall back to jumper-based ordering.
+        if(info[0].m_bConnected && info[1].m_bConnected &&
+           m_Devices[0].IsPlayer2Locked() == m_Devices[1].IsPlayer2Locked())
+            return false;
 
-    const bool bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
-                 (info[1].m_bConnected && !m_Devices[1].IsPlayer2Locked());
+        bSwap = (info[0].m_bConnected && m_Devices[0].IsPlayer2Locked()) ||
+                (info[1].m_bConnected && !m_Devices[1].IsPlayer2Locked());
+    }
+
     if(bSwap)
     {
         SMXDevice temp(std::move(m_Devices[0]));
@@ -524,6 +563,25 @@ bool SMXManager::CorrectDeviceOrder()
         m_Devices[1].SetPadIndex(1);
     }
     return bSwap;
+}
+
+void SMXManager::SetPlayerAssignment(const string &sP1Serial, const string &sP2Serial)
+{
+    lock_guard<recursive_mutex> lock(m_Lock);
+    m_asPlayerAssignment[0] = sP1Serial;
+    m_asPlayerAssignment[1] = sP2Serial;
+
+    // Apply immediately: if the two connected pads are in the wrong slots they
+    // are swapped now, and Connected callbacks fire for the affected slots so
+    // listeners re-read per-slot identity — no reconnect required.
+    if(CorrectDeviceOrder())
+    {
+        for(int i = 0; i < 2; i++)
+        {
+            if(m_Devices[i].IsConnected())
+                m_Devices[i].FireConnectedCallback(i);
+        }
+    }
 }
 
 } // namespace SMX

@@ -16,6 +16,13 @@
 
 namespace SMX {
 
+/// Decide slot ordering from a user-pinned serial->slot assignment (the core of
+/// the SMX_SetPlayerAssignment override). Returns 0 (leave) or 1 (swap) only when
+/// both pads are connected and their serials are exactly the two assigned serials;
+/// otherwise -1 (defer to jumper ordering). Declared here so it can be unit-tested
+/// in isolation; not part of the public SMX_* API.
+int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1);
+
 // ---------------------------------------------------------------------------
 // SMXManager — device search, I/O thread, orchestration
 // ---------------------------------------------------------------------------
@@ -44,6 +51,14 @@ public:
     /// Generates and assigns random serial numbers to all connected devices
     /// that don't already have one.
     void SetSerialNumbers();
+
+    /// Pins pad serials to player slots (sP1Serial -> slot 0, sP2Serial -> slot 1),
+    /// overriding the hardware P1/P2 jumper when ordering the two slots. The
+    /// override only takes effect when both connected pads' serials are the two
+    /// given serials; otherwise (no override, a single pad, or an unrecognized
+    /// serial) ordering falls back to the jumper. Empty strings clear the override.
+    /// Applies immediately, firing Connected callbacks for any slot that changed.
+    void SetPlayerAssignment(const std::string &sP1Serial, const std::string &sP2Serial);
 
     void SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
     void ReenableAutoLights();
@@ -84,6 +99,7 @@ private:
 
     // --- Devices and discovery ---
     SMXDevice m_Devices[2];                     // Pad slots: index 0 = P1, index 1 = P2
+    std::string m_asPlayerAssignment[2];        // Serial pinned to each slot (empty = follow jumper)
     std::function<void(int, SMXUpdateCallbackReason)> m_Callback;  // Application update callback
     std::unique_ptr<IHIDEnumerator> m_pEnumerator;  // HID device enumerator (real or fake)
     double m_fLastEnumerationTime = 0;          // Rate-limits HID enumeration to 1/sec

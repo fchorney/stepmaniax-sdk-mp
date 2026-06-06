@@ -94,6 +94,12 @@ SMX_API void SMX_SetSerialNumbers()
     if(g_pSMX) g_pSMX->SetSerialNumbers();
 }
 
+SMX_API void SMX_SetPlayerAssignment(const char *pP1Serial, const char *pP2Serial)
+{
+    if(g_pSMX)
+        g_pSMX->SetPlayerAssignment(pP1Serial ? pP1Serial : "", pP2Serial ? pP2Serial : "");
+}
+
 SMX_API void SMX_FactoryReset(const int pad)
 {
     if(!g_pSMX) return;
