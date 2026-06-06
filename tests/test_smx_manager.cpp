@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 #include "test_helpers_manager.h"
+#include "SMXManager.h"  // for GetOverrideSwap (internal decision helper)
 
 #include <atomic>
 
@@ -148,6 +149,65 @@ TEST_CASE("SetPlayerAssignment overrides jumper order") {
     CHECK(string(info1.m_Serial) == s1);
 
     SMX_Stop();
+}
+
+// =========================================================================
+// GetOverrideSwap decision logic (unit-tested in isolation)
+// =========================================================================
+
+// Build a minimal SMXInfo for the override decision (which reads only the
+// connected flag and the serial).
+static SMXInfo MakeInfo(bool bConnected, const char *pSerial) {
+    SMXInfo info = {};
+    info.m_bConnected = bConnected;
+    if(pSerial) {
+        string s(pSerial);
+        for(size_t i = 0; i < s.size() && i + 1 < sizeof(info.m_Serial); i++)
+            info.m_Serial[i] = s[i];
+    }
+    return info;
+}
+
+TEST_CASE("GetOverrideSwap: no override defers to jumper") {
+    string none[2] = {"", ""};
+    CHECK(GetOverrideSwap(none, MakeInfo(true, "aaaa"), MakeInfo(true, "bbbb")) == -1);
+}
+
+TEST_CASE("GetOverrideSwap: already in order, no swap") {
+    string asn[2] = {"aaaa", "bbbb"};
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(true, "bbbb")) == 0);
+}
+
+TEST_CASE("GetOverrideSwap: reversed requests swap") {
+    string asn[2] = {"aaaa", "bbbb"};
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "bbbb"), MakeInfo(true, "aaaa")) == 1);
+}
+
+TEST_CASE("GetOverrideSwap: orders two same-jumper pads") {
+    // The key capability: the decision is by serial only, so it orders pads the
+    // jumper can't (the override never reads the jumper bit).
+    string asn[2] = {"aaaa", "bbbb"};
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "bbbb"), MakeInfo(true, "aaaa")) == 1);
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(true, "bbbb")) == 0);
+}
+
+TEST_CASE("GetOverrideSwap: lone pad defers to jumper") {
+    string asn[2] = {"aaaa", "bbbb"};
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(false, "")) == -1);
+    CHECK(GetOverrideSwap(asn, MakeInfo(false, ""), MakeInfo(true, "aaaa")) == -1);
+}
+
+TEST_CASE("GetOverrideSwap: unknown serial defers to jumper") {
+    // One connected pad's serial isn't part of the assignment (e.g. a freshly
+    // swapped-in pad) -> fall back to jumper ordering.
+    string asn[2] = {"aaaa", "bbbb"};
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(true, "cccc")) == -1);
+}
+
+TEST_CASE("GetOverrideSwap: partial assignment defers to jumper") {
+    // Only one slot pinned -> not a complete override.
+    string half[2] = {"aaaa", ""};
+    CHECK(GetOverrideSwap(half, MakeInfo(true, "aaaa"), MakeInfo(true, "bbbb")) == -1);
 }
 
 // =========================================================================

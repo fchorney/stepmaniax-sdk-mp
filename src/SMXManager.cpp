@@ -506,7 +506,7 @@ void SMXManager::AttemptConnections()
 // override then forces that order regardless of jumper. Returns -1 (defer to
 // jumper ordering) when there is no assignment, only one pad is connected, or a
 // connected pad's serial isn't part of the assignment.
-static int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1)
+int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1)
 {
     const std::string &sP1 = asAssignment[0];
     const std::string &sP2 = asAssignment[1];
