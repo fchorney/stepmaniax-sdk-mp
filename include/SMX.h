@@ -253,6 +253,18 @@ SMX_API uint16_t SMX_GetInputState(int pad);
 /// Note: Devices without a serial number show a hex string of all zeros or all F's.
 SMX_API void SMX_SetSerialNumbers();
 
+/// Pins pad serials to player slots (p1Serial -> slot 0, p2Serial -> slot 1),
+/// overriding the hardware P1/P2 jumper when ordering the two slots. This is the
+/// only way to order two pads that share a jumper, or to swap pads installed on
+/// the wrong sides.
+///
+/// The override only takes effect when both connected pads' serials are exactly
+/// the two given serials; otherwise (no override, a single pad, or an unrecognized
+/// serial) ordering falls back to the jumper. Pass NULL or "" for a side to clear
+/// the override. Applies immediately, firing Connected callbacks for any slot
+/// whose occupant changed — no reconnect required.
+SMX_API void SMX_SetPlayerAssignment(const char *p1Serial, const char *p2Serial);
+
 /// Resets a pad to its factory default configuration.
 /// This sends a reset command to the device and re-reads the resulting configuration.
 /// The operation is asynchronous; the SMXUpdateCallback_ConfigUpdated callback will fire

@@ -102,6 +102,54 @@ TEST_CASE("Two devices are ordered P1=slot0, P2=slot1") {
     SMX_Stop();
 }
 
+TEST_CASE("SetPlayerAssignment overrides jumper order") {
+    auto pFakeP1 = new FakeDevice();
+    auto pFakeP2 = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeP1);
+    pEnum->AddDevice("/dev/hidraw1", pFakeP2);
+
+    pFakeP1->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeP1->SetConfigResponse(MakeConfigResponse());
+    pFakeP2->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeP2->SetConfigResponse(MakeConfigResponse());
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info0 = {}, info1 = {};
+    bool bBothConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    });
+    REQUIRE(bBothConnected);
+
+    // Jumper ordering: P1-jumpered pad in slot 0, P2-jumpered pad in slot 1.
+    const string s0 = info0.m_Serial;
+    const string s1 = info1.m_Serial;
+    CHECK(s0 != s1);
+    CHECK_FALSE(info0.m_bIsPlayer2);
+    CHECK(info1.m_bIsPlayer2);
+
+    // Pin the assignment reversed (the P2-jumpered pad becomes P1, slot 0).
+    // The override must beat the jumper, so the slots swap immediately.
+    SMX_SetPlayerAssignment(s1.c_str(), s0.c_str());
+    SMX_GetInfo(0, &info0);
+    SMX_GetInfo(1, &info1);
+    CHECK(string(info0.m_Serial) == s1);
+    CHECK(string(info1.m_Serial) == s0);
+
+    // Clearing the override restores jumper ordering.
+    SMX_SetPlayerAssignment("", "");
+    SMX_GetInfo(0, &info0);
+    SMX_GetInfo(1, &info1);
+    CHECK(string(info0.m_Serial) == s0);
+    CHECK(string(info1.m_Serial) == s1);
+
+    SMX_Stop();
+}
+
 // =========================================================================
 // Disconnect and reconnect
 // =========================================================================
