@@ -69,6 +69,16 @@ string BinaryToHex(const string &sString)
     return BinaryToHex(sString.data(), static_cast<int>(sString.size()));
 }
 
+string Trim(const string &s)
+{
+    static const char *whitespace = " \t\r\n";
+    size_t first = s.find_first_not_of(whitespace);
+    if(first == string::npos)
+        return string();
+    size_t last = s.find_last_not_of(whitespace);
+    return s.substr(first, last - first + 1);
+}
+
 void GenerateSerial(uint8_t *pOut)
 {
     random_device rd;

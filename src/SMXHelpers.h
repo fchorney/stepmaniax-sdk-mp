@@ -42,6 +42,11 @@ std::string BinaryToHex(const void *pData, int iNumBytes);
 /// @return Hexadecimal string representation.
 std::string BinaryToHex(const std::string &sString);
 
+/// Strips leading and trailing ASCII whitespace (space, tab, CR, LF).
+/// @param s The string to trim.
+/// @return The trimmed string; empty if the input was empty or all whitespace.
+std::string Trim(const std::string &s);
+
 /// Generates a random serial number (16 random bytes).
 /// Used to assign unique identifiers to devices that don't have a serial number.
 /// @param pOut Pointer to a 16-byte buffer to receive the generated serial.

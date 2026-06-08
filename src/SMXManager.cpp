@@ -26,9 +26,7 @@ SMXManager::SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callb
             // `&&` into the value; the trailing space then lands mid-path
             // (".../dir \device_0.smxhid") and makes the capture file
             // unresolvable (path not found).
-            string sCaptureDir = pCaptureDir;
-            sCaptureDir.erase(0, sCaptureDir.find_first_not_of(" \t\r\n"));
-            sCaptureDir.erase(sCaptureDir.find_last_not_of(" \t\r\n") + 1);
+            string sCaptureDir = Trim(pCaptureDir);
             if(!sCaptureDir.empty())
             {
                 Log("Recording HID traffic to: " + sCaptureDir);
