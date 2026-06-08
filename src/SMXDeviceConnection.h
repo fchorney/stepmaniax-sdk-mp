@@ -92,7 +92,9 @@ struct SMXDeviceInfo
 ///
 ///   Main Thread Only (no synchronization needed):
 ///   - m_pDevice, m_sPath, m_DeviceInfo: immutable after Open()
-///   - m_pInputStateChangedCallback: only modified during setup
+///
+///   Protected by External Lock (read by USB thread, written by main thread):
+///   - m_pInputStateChangedCallback: read in PollUSBData(), set via SetConnectionCallbacks()
 ///
 /// PROTOCOL DETAILS:
 ///

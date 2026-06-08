@@ -199,6 +199,8 @@ void SMXDeviceConnection::CheckReads()
     while(processedBytes + 3 <= localBuffer.size())
     {
         const size_t packetLen = 3 + static_cast<uint8_t>(localBuffer[processedBytes + 2]);
+        if(processedBytes + packetLen > localBuffer.size())
+            break;
 
         HandleUsbPacket(localBuffer.data() + processedBytes, packetLen);
         processedBytes += packetLen;
