@@ -21,8 +21,17 @@ SMXManager::SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callb
         const char *pCaptureDir = getenv("SMX_CAPTURE_DIR");
         if(pCaptureDir && pCaptureDir[0] != '\0')
         {
-            Log("Recording HID traffic to: " + string(pCaptureDir));
-            return unique_ptr<IHIDEnumerator>(new RecordingHIDEnumerator(std::move(pEnumerator), pCaptureDir, true));
+            // Trim surrounding whitespace. A common Windows gotcha is
+            // `set SMX_CAPTURE_DIR=path && app`, which captures the space before
+            // `&&` into the value; the trailing space then lands mid-path
+            // (".../dir \device_0.smxhid") and makes the capture file
+            // unresolvable (path not found).
+            string sCaptureDir = Trim(pCaptureDir);
+            if(!sCaptureDir.empty())
+            {
+                Log("Recording HID traffic to: " + sCaptureDir);
+                return unique_ptr<IHIDEnumerator>(new RecordingHIDEnumerator(std::move(pEnumerator), sCaptureDir, true));
+            }
         }
         return pEnumerator;
     }())

@@ -3,11 +3,12 @@
 #include <cstdint>
 #include <string>
 
-// These are defined in SMX.cpp in the SMX namespace
+// These are defined in SMXHelpers.cpp in the SMX namespace
 namespace SMX {
     std::string ssprintf(const char *fmt, ...);
     std::string BinaryToHex(const void *pData, int iNumBytes);
     std::string BinaryToHex(const std::string &sString);
+    std::string Trim(const std::string &s);
 }
 
 using namespace std;
@@ -55,4 +56,17 @@ TEST_CASE("ssprintf handles strings longer than 256 chars") {
     CHECK(result.substr(0, 7) == "prefix_");
     CHECK(result.substr(result.size() - 7) == "_suffix");
     CHECK(result.substr(7, 300) == padding);
+}
+
+TEST_CASE("Trim strips surrounding whitespace") {
+    // The bug this guards: `set VAR=path && app` on Windows leaves a trailing
+    // space that otherwise corrupts the SMX_CAPTURE_DIR path.
+    CHECK(SMX::Trim("C:\\tmp\\smx-capture ") == "C:\\tmp\\smx-capture");
+    CHECK(SMX::Trim("  /tmp/cap  ") == "/tmp/cap");
+    CHECK(SMX::Trim("/tmp/cap") == "/tmp/cap");
+}
+
+TEST_CASE("Trim of empty or whitespace-only is empty") {
+    CHECK(SMX::Trim("").empty());
+    CHECK(SMX::Trim("   ").empty());
 }
