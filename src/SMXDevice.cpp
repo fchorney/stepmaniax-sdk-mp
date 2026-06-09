@@ -284,6 +284,7 @@ void SMXDevice::HandlePackets()
         if(buf[0] == 'g')
         {
             vector<uint8_t> raw(buf.begin() + 2, buf.begin() + 2 + iSize);
+            m_aRawOldConfig = raw;
             raw.resize(sizeof(OldSMXConfig), 0);  // Pad to full struct size for safe access
             ConvertToNewConfig(raw, m_Config);
         }
@@ -332,8 +333,7 @@ void SMXDevice::SendConfig()
     else
     {
         sData = "w";
-        vector<uint8_t> outputConfig(reinterpret_cast<const uint8_t*>(&m_Config),
-                                     reinterpret_cast<const uint8_t*>(&m_Config) + sizeof(SMXConfig));
+        vector<uint8_t> outputConfig = m_aRawOldConfig;
         ConvertToOldConfig(m_WantedConfig, outputConfig);
         uint8_t iSize = static_cast<uint8_t>(outputConfig.size());
         sData.append(reinterpret_cast<char*>(&iSize), 1);
