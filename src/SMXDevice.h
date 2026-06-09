@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "SMX.h"
 #include "SMXDeviceConnection.h"
@@ -121,6 +122,7 @@ private:
     // --- Configuration state ---
     SMXConfig m_Config;                    // Last config read from device
     SMXConfig m_WantedConfig;              // Pending config to write (set by SetConfig)
+    std::vector<uint8_t> m_aRawOldConfig;  // Raw old-format config bytes from device (fw < 5)
     bool m_bHaveConfig = false;            // True once initial config has been read
     bool m_bSendConfig = false;            // True if m_WantedConfig needs to be sent
     bool m_bSendingConfig = false;         // True while a config write is in flight
