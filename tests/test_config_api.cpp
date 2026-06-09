@@ -556,3 +556,92 @@ TEST_CASE("SMX_SetConfig rate-limits writes to once per second") {
 
     SMX_Stop();
 }
+
+TEST_CASE("SMX_SetConfig on old firmware sends 128-byte old config format") {
+    OldSMXConfig oldCfg = {};
+    oldCfg.configVersion = 3;
+    oldCfg.masterVersion = 2;
+    oldCfg.masterDebounceMilliseconds = 15;
+    oldCfg.panelThreshold7Low = 33;
+    oldCfg.panelThreshold7High = 42;
+    oldCfg.panelThreshold4Low = 35;
+    oldCfg.panelThreshold4High = 60;
+
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 2));
+    pFakeDevice->SetConfigResponsePackets(MakeOldConfigResponsePackets(oldCfg));
+    pFakeDevice->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    SMXInfo info = {};
+    REQUIRE(WaitFor([&]() {
+        SMX_GetInfo(0, &info);
+        return info.m_bConnected;
+    }));
+
+    pFakeDevice->ClearCapturedWrites();
+
+    // Read config and modify a threshold
+    SMXConfig newCfg = {};
+    SMX_GetConfig(0, &newCfg);
+    newCfg.panelSettings[7].loadCellLowThreshold = 70;
+    newCfg.panelSettings[7].loadCellHighThreshold = 71;
+    SMX_SetConfig(0, &newCfg);
+
+    // Wait for write to be sent
+    bool bWriteSent = WaitFor([&]() {
+        return pFakeDevice->GetCapturedWriteCount() > 0;
+    });
+    REQUIRE(bWriteSent);
+
+    // Find the 'w' command and verify its contents
+    auto writes = pFakeDevice->GetCapturedWrites();
+
+    // Reassemble the fragmented command payload
+    vector<uint8_t> cmdPayload;
+    bool bInCommand = false;
+    for(const auto &w : writes)
+    {
+        if(w.size() < 4) continue;
+        if(w[0] != HID_REPORT_COMMAND) continue;
+        uint8_t flags = w[1];
+        uint8_t size = w[2];
+        if((flags & PACKET_FLAG_START_OF_COMMAND) && size >= 1 && w[3] == 'w')
+        {
+            bInCommand = true;
+            cmdPayload.insert(cmdPayload.end(), w.begin() + 3, w.begin() + 3 + size);
+        }
+        else if(bInCommand && !(flags & PACKET_FLAG_START_OF_COMMAND))
+        {
+            cmdPayload.insert(cmdPayload.end(), w.begin() + 3, w.begin() + 3 + size);
+            if(flags & PACKET_FLAG_END_OF_COMMAND)
+                break;
+        }
+    }
+
+    REQUIRE(!cmdPayload.empty());
+    // cmdPayload[0] = 'w', cmdPayload[1] = size byte, rest is config data
+    CHECK(cmdPayload[0] == 'w');
+    uint8_t iConfigSize = cmdPayload[1];
+    CHECK(iConfigSize == 128);  // Must be 128, not 250
+
+    // Verify the threshold was written correctly in old format
+    REQUIRE(cmdPayload.size() >= 2 + 128);
+    const OldSMXConfig &written = *reinterpret_cast<const OldSMXConfig*>(&cmdPayload[2]);
+    CHECK(written.panelThreshold7Low == 70);
+    CHECK(written.panelThreshold7High == 71);
+    // Verify other fields preserved from original
+    CHECK(written.panelThreshold4Low == 35);
+    CHECK(written.panelThreshold4High == 60);
+    CHECK(written.masterDebounceMilliseconds == 15);
+    // Verify unused bytes are preserved (should be 0xFF from OldSMXConfig defaults)
+    CHECK(written.unused1 == 0xFF);
+    CHECK(written.unused2 == 0xFF);
+
+    SMX_Stop();
+}
