@@ -74,7 +74,7 @@ All features from the original StepManiaX SDK have been implemented, plus severa
 | Polling rate configuration | `SMX_SetPollingRate` | Tune latency vs CPU usage per-thread |
 | Input state callback mode | `SMX_SetInputStateMode` | Fire callback on every packet or only on state change |
 | Monotonic time | `SMX_GetMonotonicTime` | High-resolution elapsed time for timestamps |
-| Pad → player assignment | `SMX_SetPlayerAssignment` | Pin pad serials to slots, overriding the P1/P2 jumper (orders two pads that share a jumper, or swaps pads on the wrong sides) |
+| Pad → player assignment | `SMX_SetPlayerAssignment` | Pin pad serials to slots, overriding the P1/P2 jumper (orders two pads that share a jumper, swaps pads on the wrong sides, or places a single pad on either side regardless of its jumper) |
 
 ## Threading Architecture
 
@@ -556,6 +556,8 @@ if (info[0].m_bConnected && info[1].m_bConnected &&
 ```
 
 If pads don't have serial numbers (`m_bHasSerialNumber` is false), call `SMX_SetSerialNumbers()` to assign them. Once assigned, serial numbers persist across power cycles.
+
+`SMX_SetPlayerAssignment(p1Serial, p2Serial)` pins serials to slots and overrides the jumper. It also covers a single connected pad: pass only the P2 serial to place a lone pad on slot 1 (P2), or only the P1 serial to place it on slot 0 (P1), regardless of the pad's jumper. Pass empty strings to clear the override and fall back to the jumper. Two pads still require both serials for an order to be forced.
 
 ## Panel Bitmask
 
