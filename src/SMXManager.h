@@ -17,10 +17,11 @@
 namespace SMX {
 
 /// Decide slot ordering from a user-pinned serial->slot assignment (the core of
-/// the SMX_SetPlayerAssignment override). Returns 0 (leave) or 1 (swap) only when
-/// both pads are connected and their serials are exactly the two assigned serials;
-/// otherwise -1 (defer to jumper ordering). Declared here so it can be unit-tested
-/// in isolation; not part of the public SMX_* API.
+/// the SMX_SetPlayerAssignment override). Returns 0 (leave) or 1 (swap) when the
+/// assignment determines the order, otherwise -1 (defer to jumper ordering). Two
+/// connected pads need the full serial pair; a single connected pad follows a
+/// single-sided assignment (P2-only -> slot 1, P1-only -> slot 0). Declared here
+/// so it can be unit-tested in isolation; not part of the public SMX_* API.
 int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1);
 
 // ---------------------------------------------------------------------------

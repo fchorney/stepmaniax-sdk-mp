@@ -510,27 +510,66 @@ void SMXManager::AttemptConnections()
 
 // Decide ordering from a user-pinned serial->slot assignment.
 //
-// Returns 0 (leave) or 1 (swap) only when an assignment is set, both pads are
-// connected, and both their serials are exactly the two assigned serials — the
-// override then forces that order regardless of jumper. Returns -1 (defer to
-// jumper ordering) when there is no assignment, only one pad is connected, or a
-// connected pad's serial isn't part of the assignment.
+// Returns 0 (leave) or 1 (swap) when the assignment determines the order, or -1
+// (defer to jumper ordering) when there is no assignment set or a connected pad's
+// serial isn't covered by the assignment.
+//
+// - Two pads connected: only a full two-serial assignment forces an order (the
+//   one case that can separate two pads sharing a jumper).
+// - One pad connected: a single-sided assignment relocates it to its pinned slot,
+//   so a lone stage pinned to P2 moves to slot 1 (and one pinned to P1 moves to
+//   slot 0), regardless of its hardware jumper. This is how a single pad is
+//   played as P2.
 int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, const SMXInfo &info1)
 {
     const std::string &sP1 = asAssignment[0];
     const std::string &sP2 = asAssignment[1];
-    if(sP1.empty() || sP2.empty())
+    if(sP1.empty() && sP2.empty())
+        return -1; // no assignment at all
+
+    const bool bConnected0 = info0.m_bConnected;
+    const bool bConnected1 = info1.m_bConnected;
+
+    // Two pads: require the complete pair to force an order; a single pinned side
+    // is ambiguous with two pads present, so defer to the jumper.
+    if(bConnected0 && bConnected1)
+    {
+        if(sP1.empty() || sP2.empty())
+            return -1;
+        const std::string &s0 = info0.m_Serial;
+        const std::string &s1 = info1.m_Serial;
+        if(s0 == sP1 && s1 == sP2)
+            return 0; // already in the desired order
+        if(s0 == sP2 && s1 == sP1)
+            return 1; // pads are swapped relative to the assignment
+        return -1;    // a serial isn't covered by the assignment -> jumper fallback
+    }
+
+    // Lone pad in slot 0: keep it there if it's the P1 pad, move it to slot 1 if
+    // it's the P2 pad. An unassigned serial defers to the jumper.
+    if(bConnected0 && !bConnected1)
+    {
+        const std::string &s = info0.m_Serial;
+        if(!sP1.empty() && s == sP1)
+            return 0; // pinned to P1 (slot 0)
+        if(!sP2.empty() && s == sP2)
+            return 1; // pinned to P2 -> relocate to slot 1
         return -1;
-    // Lone pad keeps jumper behavior; the override only orders a known pair.
-    if(!info0.m_bConnected || !info1.m_bConnected)
+    }
+
+    // Lone pad in slot 1: keep it there if it's the P2 pad, move it to slot 0 if
+    // it's the P1 pad.
+    if(!bConnected0 && bConnected1)
+    {
+        const std::string &s = info1.m_Serial;
+        if(!sP2.empty() && s == sP2)
+            return 0; // pinned to P2 (slot 1)
+        if(!sP1.empty() && s == sP1)
+            return 1; // pinned to P1 -> relocate to slot 0
         return -1;
-    const std::string s0 = info0.m_Serial;
-    const std::string s1 = info1.m_Serial;
-    if(s0 == sP1 && s1 == sP2)
-        return 0; // already in the desired order
-    if(s0 == sP2 && s1 == sP1)
-        return 1; // pads are swapped relative to the assignment
-    return -1;    // a serial isn't covered by the assignment -> jumper fallback
+    }
+
+    return -1; // neither pad connected
 }
 
 bool SMXManager::CorrectDeviceOrder()
