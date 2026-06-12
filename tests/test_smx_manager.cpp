@@ -191,10 +191,26 @@ TEST_CASE("GetOverrideSwap: orders two same-jumper pads") {
     CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(true, "bbbb")) == 0);
 }
 
-TEST_CASE("GetOverrideSwap: lone pad defers to jumper") {
+TEST_CASE("GetOverrideSwap: lone pad with unassigned serial defers to jumper") {
     string asn[2] = {"aaaa", "bbbb"};
-    CHECK(GetOverrideSwap(asn, MakeInfo(true, "aaaa"), MakeInfo(false, "")) == -1);
-    CHECK(GetOverrideSwap(asn, MakeInfo(false, ""), MakeInfo(true, "aaaa")) == -1);
+    CHECK(GetOverrideSwap(asn, MakeInfo(true, "cccc"), MakeInfo(false, "")) == -1);
+    CHECK(GetOverrideSwap(asn, MakeInfo(false, ""), MakeInfo(true, "cccc")) == -1);
+}
+
+TEST_CASE("GetOverrideSwap: lone pad pinned to P2 relocates to slot 1") {
+    // The single-pad-as-P2 case: only the P2 serial is set, and the one connected
+    // pad (jumper irrelevant) must move from slot 0 to slot 1.
+    string p2_only[2] = {"", "aaaa"};
+    CHECK(GetOverrideSwap(p2_only, MakeInfo(true, "aaaa"), MakeInfo(false, "")) == 1);
+    // Already at slot 1: stay put.
+    CHECK(GetOverrideSwap(p2_only, MakeInfo(false, ""), MakeInfo(true, "aaaa")) == 0);
+}
+
+TEST_CASE("GetOverrideSwap: lone pad pinned to P1 stays at slot 0") {
+    string p1_only[2] = {"aaaa", ""};
+    CHECK(GetOverrideSwap(p1_only, MakeInfo(true, "aaaa"), MakeInfo(false, "")) == 0);
+    // Lone pad at slot 1 pinned to P1 -> relocate to slot 0.
+    CHECK(GetOverrideSwap(p1_only, MakeInfo(false, ""), MakeInfo(true, "aaaa")) == 1);
 }
 
 TEST_CASE("GetOverrideSwap: unknown serial defers to jumper") {
