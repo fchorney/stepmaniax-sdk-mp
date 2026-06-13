@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(smx-sdk-mp VERSION 1.2.0 LANGUAGES CXX)
+project(smx-sdk-mp VERSION 1.3.0 LANGUAGES CXX)
 
 # Generate version header from project version
 configure_file(src/SMXVersion.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/SMXVersion.h)
@@ -117,6 +117,10 @@ endif()
 if(BUILD_SAMPLE)
     add_executable(smx-sample sample/sample.cpp)
     target_link_libraries(smx-sample PRIVATE smx-mp)
+
+    # Sensor sampling-rate probe (lights-on vs lights-off, per pad).
+    add_executable(smx-sensor-rate sample/sensor_rate.cpp)
+    target_link_libraries(smx-sensor-rate PRIVATE smx-mp)
 endif()
 
 # Tests

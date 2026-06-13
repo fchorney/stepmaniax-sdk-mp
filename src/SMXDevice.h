@@ -88,6 +88,9 @@ public:
     /// Sets the sensor test mode for this device.
     void SetSensorTestMode(SensorTestMode mode);
 
+    /// True if any sensor test mode is currently active on this device.
+    bool IsSensorTestActive() const { return m_SensorTestMode != SensorTestMode_Off; }
+
     /// Retrieves the most recent sensor test data.
     bool GetTestData(SMXSensorTestModeData &data) const;
 

@@ -27,6 +27,7 @@ static constexpr int LEGACY_LIGHTS_PAYLOAD_SIZE = 108;
 // Timing constants.
 static constexpr double CONFIG_WRITE_RATE_LIMIT_SECONDS = 1.0;  // Min interval between config writes
 static constexpr double SENSOR_TEST_TIMEOUT_SECONDS     = 2.0;  // Timeout for sensor test response
+static constexpr int    SENSOR_TEST_POLL_WAIT_MS        = 20;   // Main-loop wait while sensor test active (targets ~20Hz+)
 static constexpr double PANEL_TEST_REFRESH_SECONDS      = 1.0;  // Resend panel test mode interval
 static constexpr double ENUMERATION_INTERVAL_SECONDS    = 1.0;  // Min interval between HID enumerations
 static constexpr double LIGHTS_FRAME_INTERVAL           = 1.0/30.0;  // 30 FPS rate limit for lights

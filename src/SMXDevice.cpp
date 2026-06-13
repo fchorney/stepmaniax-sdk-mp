@@ -370,7 +370,8 @@ void SMXDevice::UpdateSensorTestMode()
     string sCmd = "y";
     sCmd.push_back(static_cast<char>(m_SensorTestMode));
     sCmd.push_back('\n');
-    m_Connection.SendCommand(sCmd);
+    // Jump ahead of any queued light frames so the response stays prompt.
+    m_Connection.SendCommandPriority(sCmd);
 }
 
 void SMXDevice::HandleSensorTestDataResponse(const string &buf)

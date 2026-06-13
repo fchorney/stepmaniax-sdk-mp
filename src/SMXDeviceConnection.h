@@ -175,6 +175,16 @@ public:
     /// @param pComplete Optional callback invoked when the device responds (or on error).
     void SendCommand(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
 
+    /// Like SendCommand, but queues at the FRONT so the command is sent ahead of
+    /// already-queued commands (after any in-flight one finishes).
+    ///
+    /// Lights and sensor-test polling share this single command pipeline. Light
+    /// frames enqueue several commands at 30Hz, so a FIFO sensor request waits
+    /// behind that backlog (measured ~100ms request->response with lights vs
+    /// ~16ms without). Latency-sensitive requests use this to stay prompt without
+    /// reducing the light rate.
+    void SendCommandPriority(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
+
     /// Retrieves the current input state (pressed panels) bitmask.
     uint16_t GetInputState() const { return m_iInputState.load(); }
 
@@ -249,6 +259,10 @@ private:
         bool m_bSent = false;                                     // True if sent to device and awaiting response
         double m_fSentAt = 0;                                     // Time when command was sent (for timeout detection)
     };
+
+    /// Builds a PendingCommand, fragmenting cmd into 64-byte HID packets.
+    /// Shared by SendCommand (queues at back) and SendCommandPriority (front).
+    std::unique_ptr<PendingCommand> BuildCommand(const std::string &cmd, std::function<void(std::string response)> pComplete);
 
     std::deque<std::unique_ptr<PendingCommand>> m_aPendingCommands; // Queue of commands not yet sent
     std::unique_ptr<PendingCommand> m_pCurrentCommand;             // Command currently awaiting response

@@ -427,6 +427,12 @@ void SMXManager::ThreadMain()
             iWaitMs = min(iWaitMs, iLightsMs);
         }
 
+        // While sensor test mode is active on either pad, poll faster so the next
+        // sensor request fires promptly after each response instead of waiting out
+        // the full idle interval (the 50ms default otherwise caps the rate at ~15Hz).
+        if(m_Devices[0].IsSensorTestActive() || m_Devices[1].IsSensorTestActive())
+            iWaitMs = min(iWaitMs, SENSOR_TEST_POLL_WAIT_MS);
+
         m_Cond.wait_for(m_Lock, chrono::milliseconds(iWaitMs));
     }
     m_Lock.unlock();
