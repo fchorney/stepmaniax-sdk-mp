@@ -397,6 +397,21 @@ void SMXDeviceConnection::SendCommandPriority(const string &cmd, function<void(s
     m_aPendingCommands.push_front(BuildCommand(cmd, std::move(pComplete)));
 }
 
+void SMXDeviceConnection::SendCommandLights(const string &cmd)
+{
+    auto pCmd = BuildCommand(cmd, nullptr);
+    pCmd->m_bIsLights = true;
+    m_aPendingCommands.push_back(std::move(pCmd));
+}
+
+bool SMXDeviceConnection::HasUnsentLights() const
+{
+    for(const auto &cmd : m_aPendingCommands)
+        if(cmd->m_bIsLights)
+            return true;
+    return false;
+}
+
 /// Polls for USB data, called by the USB polling thread.
 ///
 /// Handles Report 3 (input state) packets completely and inline,

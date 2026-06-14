@@ -113,7 +113,6 @@ private:
     // --- Lights command queue ---
     std::vector<PendingLightsCommand> m_aPendingLightsCommands;  // Scheduled lights commands
     double m_fDelayLightCommandsUntil = 0;  // Rate-limits lights to 30 FPS
-    int m_iLightsCommandsInProgress = 0;    // Outstanding async lights commands
 };
 
 } // namespace SMX

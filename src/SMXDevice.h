@@ -91,6 +91,16 @@ public:
     /// True if any sensor test mode is currently active on this device.
     bool IsSensorTestActive() const { return m_SensorTestMode != SensorTestMode_Off; }
 
+    /// Queue a panel-lights command (coalescing-aware; see SMXDeviceConnection).
+    void SendLights(const std::string &cmd);
+
+    /// True if an un-sent light frame is still queued on this device.
+    bool HasUnsentLights() const;
+
+    /// Seconds until the next sensor-test request is due (for precise main-loop
+    /// wake timing), or a negative value if no request is pending.
+    double NextSensorRequestInSecs() const;
+
     /// Retrieves the most recent sensor test data.
     bool GetTestData(SMXSensorTestModeData &data) const;
 

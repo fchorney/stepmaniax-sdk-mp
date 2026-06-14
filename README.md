@@ -330,7 +330,7 @@ Building with `-DBUILD_SAMPLE=ON` also produces `smx-sensor-rate`, a diagnostic 
 ./smx-sensor-rate [phase_secs] [lights_hz]
 ```
 
-Lights and sensor-test polling share one per-pad command pipeline, so a sensor request must not wait behind queued light frames. The SDK sends sensor requests with `SendCommandPriority` (queued ahead of pending lights) and polls faster while a sensor test mode is active, keeping the sample rate high (~30/s) regardless of whether lights are streaming. The probe lets you confirm this on real hardware.
+Lights and sensor-test polling share one per-pad command pipeline. The SDK schedules them fairly: light frames are coalesced and bounded to one un-sent frame at a time (last-writer-wins, so stale frames never back up), the sensor request is paced to ~30Hz and inserted ahead of a pending light frame for low latency, and the main loop wakes exactly when the next request is due. This keeps both ~30Hz sensor sampling and ~30Hz lights without either starving the other; under a tight pipeline the light frame rate degrades gracefully rather than backlogging. The probe streams a moving pattern so light lag is visible and reports per-pad sample rates, to confirm on real hardware.
 
 ## API Overview
 

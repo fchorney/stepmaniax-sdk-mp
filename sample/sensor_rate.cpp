@@ -52,26 +52,57 @@ static void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, 
         g_samples[pad].fetch_add(1);
 }
 
+// A frame that lights one panel (moving each tick) on both pads. The motion is
+// what makes light lag/backlog visible: if frames are starved, the lit panel
+// stutters or keeps moving after the phase ends instead of tracking in real time.
+static void MovingFrame(std::string &buf, int tick)
+{
+    const int BYTES_PER_PAD = 675;   // 9 panels * 25 LEDs * 3 (RGB)
+    const int BYTES_PER_PANEL = 75;
+    buf.assign(LIGHTS_BYTES, char(0));
+    const int panel = tick % 9;
+    for(int pad = 0; pad < 2; ++pad)
+    {
+        const int base = pad * BYTES_PER_PAD + panel * BYTES_PER_PANEL;
+        for(int b = 0; b < BYTES_PER_PANEL; ++b)
+            buf[base + b] = char(96);
+    }
+}
+
 // Measures samples/sec per active pad over the given window, optionally streaming
-// light frames at lightsHz. Prints one line per active pad.
+// a moving light pattern at lightsHz. Prints one line per active pad.
 static void RunPhase(const char *label, int secs, int lightsHz, bool lights, const bool active[2])
 {
     printf("Phase: %s for %ds ...\n", label, secs);
     for(int i = 0; i < 2; i++)
         g_samples[i].store(0);
 
-    std::string lightData(LIGHTS_BYTES, char(32));
+    std::string lightData;
     const auto start = steady_clock::now();
     const auto dur = seconds(secs);
-    const auto frame = milliseconds(lightsHz > 0 ? (1000 / lightsHz) : 50);
+    const auto frame = duration_cast<steady_clock::duration>(
+        duration<double>(lightsHz > 0 ? 1.0 / lightsHz : 0.05));
+    int tick = 0;
+    long framesSent = 0;
+    auto next = steady_clock::now();
     while(steady_clock::now() - start < dur)
     {
         if(lights)
+        {
+            MovingFrame(lightData, tick++);
             SMX_SetLights2(lightData.data(), LIGHTS_BYTES);
-        std::this_thread::sleep_for(frame);
+            framesSent++;
+        }
+        // Deadline-based pacing so SMX_SetLights2 cost doesn't drag the rate down.
+        next += frame;
+        const auto now = steady_clock::now();
+        if(next > now)
+            std::this_thread::sleep_for(next - now);
     }
 
     const double elapsed = duration_cast<duration<double>>(steady_clock::now() - start).count();
+    if(lights)
+        printf("  (streamed %ld light frames = %.1f/s requested)\n", framesSent, framesSent / elapsed);
     for(int i = 0; i < 2; i++)
     {
         if(!active[i])

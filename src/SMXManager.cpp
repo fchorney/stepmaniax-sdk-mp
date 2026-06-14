@@ -304,6 +304,16 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 
 void SMXManager::SendPendingLightsCommands()
 {
+    // Bound the light backlog: don't hand a new frame to the per-connection
+    // command queue while a previous frame is still unsent there. Lights are
+    // last-writer-wins state, so the newest frame stays queued here (coalescing)
+    // until the connections drain. Without this, light frames pile up behind the
+    // prioritized sensor request and flush late (panels go dark mid song, then
+    // dump on exit).
+    for(int iPad = 0; iPad < 2; ++iPad)
+        if(m_Devices[iPad].HasUnsentLights())
+            return;
+
     size_t iConsumed = 0;
     while(iConsumed < m_aPendingLightsCommands.size())
     {
@@ -312,16 +322,8 @@ void SMXManager::SendPendingLightsCommands()
             break;
 
         for(int iPad = 0; iPad < 2; ++iPad)
-        {
             if(!cmd.sPadCommand[iPad].empty())
-            {
-                m_iLightsCommandsInProgress++;
-                m_Devices[iPad].SendCommand(cmd.sPadCommand[iPad], [this](string) {
-                    lock_guard<recursive_mutex> lock(m_Lock);
-                    m_iLightsCommandsInProgress--;
-                });
-            }
-        }
+                m_Devices[iPad].SendLights(cmd.sPadCommand[iPad]);
 
         iConsumed++;
     }
@@ -427,11 +429,19 @@ void SMXManager::ThreadMain()
             iWaitMs = min(iWaitMs, iLightsMs);
         }
 
-        // While sensor test mode is active on either pad, poll faster so the next
-        // sensor request fires promptly after each response instead of waiting out
-        // the full idle interval (the 50ms default otherwise caps the rate at ~15Hz).
-        if(m_Devices[0].IsSensorTestActive() || m_Devices[1].IsSensorTestActive())
-            iWaitMs = min(iWaitMs, SENSOR_TEST_POLL_WAIT_MS);
+        // While sensor test mode is active, wake exactly when the next sensor
+        // request is due so polling holds its target rate (a coarse fixed poll
+        // interval would round the period up, e.g. a 33ms target served on 20ms
+        // ticks lands at 40ms => ~25Hz instead of ~30Hz).
+        for(int iPad = 0; iPad < 2; ++iPad)
+        {
+            const double fNext = m_Devices[iPad].NextSensorRequestInSecs();
+            if(fNext >= 0.0)
+            {
+                int iNextMs = int(fNext * 1000) + 1;
+                iWaitMs = min(iWaitMs, iNextMs);
+            }
+        }
 
         m_Cond.wait_for(m_Lock, chrono::milliseconds(iWaitMs));
     }

@@ -723,3 +723,22 @@ TEST_CASE("Close clears read error flag for reconnection") {
     conn.Update(sError);
     CHECK(sError.empty());
 }
+
+TEST_CASE("Lights commands are tagged for backlog bounding; sensor/config are not") {
+    auto pFake = new FakeHIDDevice();
+    SMXDeviceConnection conn;
+    conn.Open("/fake/path", unique_ptr<IHIDDevice>(pFake));
+
+    // Only the auto device-info request is queued so far (not a lights command).
+    CHECK_FALSE(conn.HasUnsentLights());
+
+    conn.SendCommandLights("4aaa\n");
+    CHECK(conn.HasUnsentLights());
+
+    auto pFake2 = new FakeHIDDevice();
+    SMXDeviceConnection conn2;
+    conn2.Open("/fake/path2", unique_ptr<IHIDDevice>(pFake2));
+    conn2.SendCommand("y1\n");
+    conn2.SendCommandPriority("y1\n");
+    CHECK_FALSE(conn2.HasUnsentLights());
+}

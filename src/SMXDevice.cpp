@@ -192,6 +192,37 @@ void SMXDevice::SetSensorTestMode(SensorTestMode mode)
     m_SensorTestMode = mode;
 }
 
+void SMXDevice::SendLights(const string &cmd)
+{
+    lock_guard<recursive_mutex> lock(*m_pLock);
+    if(!m_Connection.IsConnected())
+        return;
+    m_Connection.SendCommandLights(cmd);
+}
+
+bool SMXDevice::HasUnsentLights() const
+{
+    lock_guard<recursive_mutex> lock(*m_pLock);
+    return m_Connection.IsConnected() && m_Connection.HasUnsentLights();
+}
+
+double SMXDevice::NextSensorRequestInSecs() const
+{
+    lock_guard<recursive_mutex> lock(*m_pLock);
+    if(m_SensorTestMode == SensorTestMode_Off)
+        return -1.0;
+    const double elapsed = (m_fSentSensorTestModeRequestAt > 0)
+        ? GetMonotonicTime() - m_fSentSensorTestModeRequestAt
+        : 1e9;
+    // While a request is outstanding the response wakes us sooner; fall back to
+    // its timeout. Once answered, the next request is due after the pacing interval.
+    const double target = (m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
+        ? SENSOR_TEST_TIMEOUT_SECONDS
+        : SENSOR_TEST_REQUEST_INTERVAL_SECONDS;
+    const double remaining = target - elapsed;
+    return remaining > 0.0 ? remaining : 0.0;
+}
+
 bool SMXDevice::GetTestData(SMXSensorTestModeData &data) const
 {
     lock_guard<recursive_mutex> lock(*m_pLock);
@@ -358,11 +389,21 @@ void SMXDevice::UpdateSensorTestMode()
     if(m_SensorTestMode == SensorTestMode_Off)
         return;
 
-    if(m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
+    if(m_fSentSensorTestModeRequestAt > 0)
     {
-        // Timeout if no response received.
-        if(GetMonotonicTime() - m_fSentSensorTestModeRequestAt < SENSOR_TEST_TIMEOUT_SECONDS)
+        const double elapsed = GetMonotonicTime() - m_fSentSensorTestModeRequestAt;
+        if(m_WaitingForSensorTestModeResponse != SensorTestMode_Off)
+        {
+            // A request is still outstanding; only re-send if it timed out.
+            if(elapsed < SENSOR_TEST_TIMEOUT_SECONDS)
+                return;
+        }
+        else if(elapsed < SENSOR_TEST_REQUEST_INTERVAL_SECONDS)
+        {
+            // Got the response; pace the next request so light frames get
+            // pipeline time in between rather than being starved.
             return;
+        }
     }
 
     m_WaitingForSensorTestModeResponse = m_SensorTestMode;
@@ -370,7 +411,8 @@ void SMXDevice::UpdateSensorTestMode()
     string sCmd = "y";
     sCmd.push_back(static_cast<char>(m_SensorTestMode));
     sCmd.push_back('\n');
-    // Jump ahead of any queued light frames so the response stays prompt.
+    // Jump ahead of any queued light frame; pacing above keeps it from
+    // monopolizing the pipeline.
     m_Connection.SendCommandPriority(sCmd);
 }
 
