@@ -50,6 +50,15 @@ static void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, 
 static void RunPhase(const char *label, int secs, int lightsHz, bool lights, const bool active[2])
 {
     printf("Phase: %s for %ds ...\n", label, secs);
+    if(!lights)
+    {
+        // Visibly clear the panels for the off phase: one frame, not streamed, so
+        // it adds no ongoing light traffic. The pad may re-assert its own idle
+        // lighting afterward, which is on-device and does not contend with sensor
+        // polling.
+        std::string off(LIGHTS_BYTES, char(0));
+        SMX_SetLights2(off.data(), LIGHTS_BYTES);
+    }
     for(int i = 0; i < 2; i++)
         g_samples[i].store(0);
 
