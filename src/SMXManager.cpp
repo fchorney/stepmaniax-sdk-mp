@@ -420,8 +420,14 @@ void SMXManager::ThreadMain()
 
         // Determine wait time: if lights commands are pending, wake up when the
         // next one is due. Otherwise use the normal main thread sleep interval.
+        // Only wake early for the next frame if we could actually send it: when a
+        // previous frame is still un-sent on the wire (the coalescing gate in
+        // SendPendingLightsCommands held it back), the pending frame is past-due
+        // and would drive the wait to 0 and busy-spin; let the ack/poll notify
+        // wake us when the connection drains instead.
         int iWaitMs = m_iMainThreadSleepMs.load(memory_order_relaxed);
-        if(!m_aPendingLightsCommands.empty())
+        bool bLightsGated = m_Devices[0].HasUnsentLights() || m_Devices[1].HasUnsentLights();
+        if(!bLightsGated && !m_aPendingLightsCommands.empty())
         {
             double fSendIn = m_aPendingLightsCommands[0].fTimeToSend - GetMonotonicTime();
             int iLightsMs = int(fSendIn * 1000) + 1;
