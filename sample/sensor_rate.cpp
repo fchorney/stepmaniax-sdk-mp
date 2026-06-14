@@ -8,7 +8,14 @@
 // throughput is independent (each pad has its own command pipeline).
 //
 // Build: cmake -B build -DBUILD_SAMPLE=ON && cmake --build build --target smx-sensor-rate
-// Run:   ./build/smx-sensor-rate [phase_secs] [lights_hz]
+// Run:   ./build/smx-sensor-rate [phase_secs] [lights_hz] [pad]
+//
+// [pad] (0 or 1) limits sensor test mode to a single pad. The other connected
+// pad is then left untouched and acts as a visual control: light frames still
+// reach it during the on phase (SMX_SetLights2 covers both pads), but in the off
+// phase it reverts to its firmware idle animation, showing that the host stops
+// driving lights. A pad that is itself being measured stays in sensor test mode
+// the whole run and holds its last frame, so it will not show the idle animation.
 
 #include <atomic>
 #include <chrono>
@@ -50,15 +57,6 @@ static void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, 
 static void RunPhase(const char *label, int secs, int lightsHz, bool lights, const bool active[2])
 {
     printf("Phase: %s for %ds ...\n", label, secs);
-    if(!lights)
-    {
-        // Hand lighting back to the pad's firmware so its idle animation resumes
-        // during the off phase (streaming lights in the on phase takes that over,
-        // leaving the panels frozen otherwise). This is one command, not streamed
-        // frames, and the firmware drives the animation on-device, so the
-        // no-contention baseline is unchanged.
-        SMX_ReenableAutoLights();
-    }
     for(int i = 0; i < 2; i++)
         g_samples[i].store(0);
 
@@ -87,9 +85,14 @@ int main(int argc, char **argv)
 {
     const int phaseSecs = argc > 1 ? atoi(argv[1]) : 6;
     const int lightsHz = argc > 2 ? atoi(argv[2]) : 30;
+    const int targetPad = (argc > 3 && (atoi(argv[3]) == 0 || atoi(argv[3]) == 1)) ? atoi(argv[3]) : -1;
 
     printf("SMX sensor sampling-rate probe\n");
-    printf("phase length: %ds per phase, light rate: %dHz\n\n", phaseSecs, lightsHz);
+    printf("phase length: %ds per phase, light rate: %dHz\n", phaseSecs, lightsHz);
+    if(targetPad >= 0)
+        printf("measuring pad %d only (other connected pad is a visual control)\n\n", targetPad);
+    else
+        printf("measuring all connected pads\n\n");
 
     SMX_Start(OnStateChanged, nullptr);
 
@@ -107,12 +110,16 @@ int main(int argc, char **argv)
     }
     std::this_thread::sleep_for(milliseconds(300)); // let a second pad enumerate
 
-    bool active[2] = { g_connected[0].load(), g_connected[1].load() };
+    // A pad is measured if it is connected and not excluded by the pad selector.
+    bool active[2] = {
+        g_connected[0].load() && (targetPad < 0 || targetPad == 0),
+        g_connected[1].load() && (targetPad < 0 || targetPad == 1),
+    };
     for(int i = 0; i < 2; i++)
     {
         if(active[i])
         {
-            printf(" ... pad %i active.\n", i);
+            printf(" ... measuring pad %i.\n", i);
             SMX_SetTestMode(i, SensorTestMode_CalibratedValues);
         }
     }
