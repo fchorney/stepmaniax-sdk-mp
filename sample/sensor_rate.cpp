@@ -52,12 +52,12 @@ static void RunPhase(const char *label, int secs, int lightsHz, bool lights, con
     printf("Phase: %s for %ds ...\n", label, secs);
     if(!lights)
     {
-        // Visibly clear the panels for the off phase: one frame, not streamed, so
-        // it adds no ongoing light traffic. The pad may re-assert its own idle
-        // lighting afterward, which is on-device and does not contend with sensor
-        // polling.
-        std::string off(LIGHTS_BYTES, char(0));
-        SMX_SetLights2(off.data(), LIGHTS_BYTES);
+        // Hand lighting back to the pad's firmware so its idle animation resumes
+        // during the off phase (streaming lights in the on phase takes that over,
+        // leaving the panels frozen otherwise). This is one command, not streamed
+        // frames, and the firmware drives the animation on-device, so the
+        // no-contention baseline is unchanged.
+        SMX_ReenableAutoLights();
     }
     for(int i = 0; i < 2; i++)
         g_samples[i].store(0);
