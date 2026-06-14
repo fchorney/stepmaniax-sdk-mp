@@ -354,7 +354,7 @@ void SMXDeviceConnection::RequestDeviceInfo(function<void(string response)> pCom
 ///
 /// The fragmented packet data is stored in pCmd->sData and will be sent sequentially
 /// by CheckWrites. Commands are processed one at a time; this just queues them.
-void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string response)> pComplete)
+unique_ptr<SMXDeviceConnection::PendingCommand> SMXDeviceConnection::BuildCommand(const string &cmd, function<void(string response)> pComplete)
 {
     auto pCmd = make_unique<PendingCommand>();
     pCmd->m_pComplete = std::move(pComplete);
@@ -384,7 +384,32 @@ void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string re
     } while(i < static_cast<int>(cmd.size()));
 
     pCmd->sData = std::move(allPackets);
+    return pCmd;
+}
+
+void SMXDeviceConnection::SendCommand(const string &cmd, function<void(string response)> pComplete)
+{
+    m_aPendingCommands.push_back(BuildCommand(cmd, std::move(pComplete)));
+}
+
+void SMXDeviceConnection::SendCommandPriority(const string &cmd, function<void(string response)> pComplete)
+{
+    m_aPendingCommands.push_front(BuildCommand(cmd, std::move(pComplete)));
+}
+
+void SMXDeviceConnection::SendCommandLights(const string &cmd)
+{
+    auto pCmd = BuildCommand(cmd, nullptr);
+    pCmd->m_bIsLights = true;
     m_aPendingCommands.push_back(std::move(pCmd));
+}
+
+bool SMXDeviceConnection::HasUnsentLights() const
+{
+    for(const auto &cmd : m_aPendingCommands)
+        if(cmd->m_bIsLights)
+            return true;
+    return false;
 }
 
 /// Polls for USB data, called by the USB polling thread.

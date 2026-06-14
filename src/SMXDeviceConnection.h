@@ -175,6 +175,25 @@ public:
     /// @param pComplete Optional callback invoked when the device responds (or on error).
     void SendCommand(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
 
+    /// Like SendCommand, but queues at the FRONT so the command is sent ahead of
+    /// already-queued commands (after any in-flight one finishes).
+    ///
+    /// Used for latency-sensitive requests (sensor-test polling) so they don't
+    /// wait behind a queued light frame. Lights are coalesced and bounded (see
+    /// SendCommandLights / HasUnsentLights) and the sensor request is paced, so
+    /// this no longer starves the light stream.
+    void SendCommandPriority(const std::string &cmd, std::function<void(std::string response)> pComplete = nullptr);
+
+    /// Queue a panel-lights command. Tagged so the manager can keep at most one
+    /// light frame queued at a time (HasUnsentLights), since lights are
+    /// last-writer-wins state and stale frames must never back up behind a
+    /// prioritized sensor request.
+    void SendCommandLights(const std::string &cmd);
+
+    /// True if any un-sent panel-lights command is queued (not counting one
+    /// already in flight). Used to avoid piling new light frames onto the queue.
+    bool HasUnsentLights() const;
+
     /// Retrieves the current input state (pressed panels) bitmask.
     uint16_t GetInputState() const { return m_iInputState.load(); }
 
@@ -246,9 +265,14 @@ private:
         std::string sData;                                        // Raw command data (all HID packets combined)
         std::function<void(std::string response)> m_pComplete;    // Callback when response received
         bool m_bIsDeviceInfoCommand = false;                      // True if this is a device info request
+        bool m_bIsLights = false;                                 // True if a panel-lights command (bounds the light backlog)
         bool m_bSent = false;                                     // True if sent to device and awaiting response
         double m_fSentAt = 0;                                     // Time when command was sent (for timeout detection)
     };
+
+    /// Builds a PendingCommand, fragmenting cmd into 64-byte HID packets.
+    /// Shared by SendCommand (queues at back) and SendCommandPriority (front).
+    std::unique_ptr<PendingCommand> BuildCommand(const std::string &cmd, std::function<void(std::string response)> pComplete);
 
     std::deque<std::unique_ptr<PendingCommand>> m_aPendingCommands; // Queue of commands not yet sent
     std::unique_ptr<PendingCommand> m_pCurrentCommand;             // Command currently awaiting response

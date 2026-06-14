@@ -324,6 +324,14 @@ make
 
 The sample scans for connected SMX pads and prints connection events and panel input state changes. Press `Ctrl+C` to quit.
 
+Building with `-DBUILD_SAMPLE=ON` also produces `smx-sensor-rate`, a diagnostic probe that measures how many sensor-test samples per second arrive from each connected pad, both while streaming light frames at 30Hz and with no light traffic:
+
+```bash
+./smx-sensor-rate [phase_secs] [lights_hz]
+```
+
+Lights and sensor-test polling share one per-pad command pipeline. The SDK schedules them fairly: light frames are coalesced and bounded to one un-sent frame at a time (last-writer-wins, so stale frames never back up), the sensor request is paced to ~30Hz and inserted ahead of a pending light frame for low latency, and the main loop wakes exactly when the next request is due. This keeps both ~30Hz sensor sampling and ~30Hz lights without either starving the other; under a tight pipeline the light frame rate degrades gracefully rather than backlogging. The probe streams a moving pattern so light lag is visible and reports per-pad sample rates, to confirm on real hardware.
+
 ## API Overview
 
 All functions are nonblocking. Getters return the most recent state. Setters return immediately and do their work in the background. `pad` is 0 for Player 1, 1 for Player 2.
