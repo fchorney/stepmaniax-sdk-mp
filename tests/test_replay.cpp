@@ -211,15 +211,15 @@ TEST_CASE("Replay: force recalibration command in capture")
     auto pEnum = new ReplayHIDEnumerator();
     pEnum->AddCapture(sFile);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     SMXInfo info;
     SMX_GetInfo(0, &info);
@@ -246,15 +246,15 @@ TEST_CASE("Replay: panel test mode command in capture")
     auto pEnum = new ReplayHIDEnumerator();
     pEnum->AddCapture(sFile);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     SMXInfo info;
     SMX_GetInfo(0, &info);
@@ -282,15 +282,15 @@ TEST_CASE("Replay: re-enable auto lights command in capture")
     auto pEnum = new ReplayHIDEnumerator();
     pEnum->AddCapture(sFile);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     SMXInfo info;
     SMX_GetInfo(0, &info);
@@ -320,20 +320,20 @@ TEST_CASE("Replay: factory reset")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    struct CbData { bool bConnected = false; int iConfigUpdated = 0; };
+    struct CbData { std::atomic<bool> bConnected{false}; std::atomic<int> iConfigUpdated{0}; };
     CbData cbData;
 
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             auto *d = static_cast<CbData*>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                d->bConnected = true;
+                d->bConnected.store(true);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                d->iConfigUpdated++;
+                d->iConfigUpdated.fetch_add(1);
         },
         &cbData, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return cbData.bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return cbData.bConnected.load(); }, 5000));
 
     // Verify we can read config after connection
     SMXConfig cfg = {};
@@ -374,20 +374,20 @@ TEST_CASE("Replay: config get/set")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    struct CbData { bool bConnected = false; int iConfigUpdated = 0; };
+    struct CbData { std::atomic<bool> bConnected{false}; std::atomic<int> iConfigUpdated{0}; };
     CbData cbData;
 
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             auto *d = static_cast<CbData*>(pUser);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                d->bConnected = true;
+                d->bConnected.store(true);
             if(SMX_REASON_IS(reason, SMXUpdateCallback_ConfigUpdated))
-                d->iConfigUpdated++;
+                d->iConfigUpdated.fetch_add(1);
         },
         &cbData, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return cbData.bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return cbData.bConnected.load(); }, 5000));
 
     // Verify we can read config after connection
     SMXConfig cfg = {};
@@ -427,15 +427,15 @@ TEST_CASE("Replay: platform lights")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool*>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     // Verify the capture contains 'L' (platform lights) commands
     auto &devs = pEnum->GetOpenedDevices();
@@ -481,15 +481,15 @@ TEST_CASE("Replay: sensor test mode")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool*>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     // Verify the capture contains 'y' (sensor test mode) commands
     auto &devs = pEnum->GetOpenedDevices();
@@ -523,21 +523,21 @@ TEST_CASE("Replay: panel lights commands in capture")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
 
     // Analyze the recorded writes from device 0
-    auto &writes = devs[0]->GetExpectedWrites();
+    const auto writes = devs[0]->GetExpectedWrites();
 
     // Extract all lights commands in order
     struct LightsCmd { char type; size_t payloadSize; size_t index; };
@@ -604,7 +604,7 @@ TEST_CASE("Replay: panel lights commands in capture")
     // If we have two devices, verify both got lights commands
     if(devs.size() >= 2)
     {
-        auto &writes1 = devs[1]->GetExpectedWrites();
+        const auto writes1 = devs[1]->GetExpectedWrites();
         bool bDev1HasLights = false;
         for(const auto &w : writes1)
         {
@@ -642,22 +642,22 @@ TEST_CASE("Replay: panel animation lights commands in capture")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     // The panel animation integration test plays a 6-frame GIF for 3 seconds.
     // Verify the capture contains lights commands from the animation playback.
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
 
-    auto &writes = devs[0]->GetExpectedWrites();
+    const auto writes = devs[0]->GetExpectedWrites();
     int iLightsCmdCount = 0;
     for(const auto &w : writes)
     {
@@ -696,21 +696,21 @@ TEST_CASE("Replay: animation upload commands in capture")
     if(CaptureExists(sFile1))
         pEnum->AddCapture(sFile1);
 
-    bool bConnected = false;
+    std::atomic<bool> bConnected{false};
     SMX_StartWithEnumerator(
         [](int, SMXUpdateCallbackReason reason, void *pUser) {
             if(SMX_REASON_IS(reason, SMXUpdateCallback_Connected))
-                *static_cast<bool *>(pUser) = true;
+                static_cast<std::atomic<bool>*>(pUser)->store(true);
         },
         &bConnected, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return bConnected; }, 5000));
+    REQUIRE(WaitFor([&]() { return bConnected.load(); }, 5000));
 
     // Verify the capture contains upload ('m') and delay ('d') commands
     auto &devs = pEnum->GetOpenedDevices();
     REQUIRE(devs.size() >= 1);
 
-    auto &writes = devs[0]->GetExpectedWrites();
+    const auto writes = devs[0]->GetExpectedWrites();
     bool bFoundUpload = false, bFoundDelay = false;
     for(const auto &w : writes)
     {

@@ -2,6 +2,7 @@
 #include "test_helpers_manager.h"
 #include "SMXConfigPacket.h"
 
+#include <atomic>
 #include <cstring>
 #include <vector>
 
@@ -177,10 +178,10 @@ TEST_CASE("SMX_SetConfig fires ConfigUpdated callback after write") {
     pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
     pFakeDevice->SetConfigResponsePackets(MakeFullConfigResponsePackets(deviceConfig));
 
-    int iConfigUpdatedCount = 0;
+    std::atomic<int> iConfigUpdatedCount{0};
     auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
         if(reason & SMXUpdateCallback_ConfigUpdated)
-            (*static_cast<int*>(pUser))++;
+            static_cast<std::atomic<int>*>(pUser)->fetch_add(1);
     };
 
     SMX_StartWithEnumerator(callback, &iConfigUpdatedCount, unique_ptr<IHIDEnumerator>(pEnum));
@@ -193,7 +194,7 @@ TEST_CASE("SMX_SetConfig fires ConfigUpdated callback after write") {
     REQUIRE(bConnected);
 
     // Reset counter after connection (which fires ConfigUpdated)
-    int iCountAfterConnect = iConfigUpdatedCount;
+    int iCountAfterConnect = iConfigUpdatedCount.load();
 
     SMXConfig newCfg = {};
     newCfg.panelDebounceMicroseconds = 5555;
@@ -201,7 +202,7 @@ TEST_CASE("SMX_SetConfig fires ConfigUpdated callback after write") {
 
     // Wait for the config updated callback to fire again (from read-back)
     bool bGotCallback = WaitFor([&]() {
-        return iConfigUpdatedCount > iCountAfterConnect;
+        return iConfigUpdatedCount.load() > iCountAfterConnect;
     });
     CHECK(bGotCallback);
 

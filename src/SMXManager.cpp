@@ -58,13 +58,15 @@ SMXManager::~SMXManager()
 {
     // Detect if SMX_Stop() is being called from within a callback (which would deadlock).
     auto thisId = this_thread::get_id();
-    if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
+    const thread::id mainId = m_MainThreadId.load();
+    const thread::id usbId = m_USBPollingThreadId.load();
+    if(thisId == mainId || thisId == usbId)
     {
         Log(ssprintf("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting. "
                      "(caller=%s, main=%s, usb=%s)",
-                     thisId == m_MainThreadId ? "MainThread" : "USBThread",
-                     m_MainThreadId == thread::id() ? "unset" : "set",
-                     m_USBPollingThreadId == thread::id() ? "unset" : "set"));
+                     thisId == mainId ? "MainThread" : "USBThread",
+                     mainId == thread::id() ? "unset" : "set",
+                     usbId == thread::id() ? "unset" : "set"));
         abort();
     }
 
@@ -350,7 +352,7 @@ void SMXManager::SetInputStateMode(bool bAlwaysFire)
 
 void SMXManager::USBPollingThreadMain()
 {
-    m_USBPollingThreadId = this_thread::get_id();
+    m_USBPollingThreadId.store(this_thread::get_id());
     while(!m_bShutdown)
     {
         bool bHasReport6Data = false;
@@ -377,7 +379,7 @@ void SMXManager::USBPollingThreadMain()
 
 void SMXManager::ThreadMain()
 {
-    m_MainThreadId = this_thread::get_id();
+    m_MainThreadId.store(this_thread::get_id());
     m_Lock.lock();
     while(!m_bShutdown)
     {

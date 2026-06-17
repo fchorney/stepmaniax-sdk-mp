@@ -98,8 +98,10 @@ private:
     std::mutex m_PollLock;
     std::thread m_Thread;                       // Main I/O thread (connections, commands, config)
     std::thread m_USBPollingThread;             // USB polling thread (input state reads)
-    std::thread::id m_MainThreadId;             // For deadlock detection in destructor
-    std::thread::id m_USBPollingThreadId;       // For deadlock detection in destructor
+    // For deadlock detection in destructor. Atomic because each is written by its
+    // thread at startup and read by the destructor without other synchronization.
+    std::atomic<std::thread::id> m_MainThreadId{std::thread::id()};
+    std::atomic<std::thread::id> m_USBPollingThreadId{std::thread::id()};
     std::condition_variable_any m_Cond;         // Signals main thread on Report 6 data or shutdown
     std::atomic<bool> m_bShutdown{false};       // Set to true to stop both threads
 
