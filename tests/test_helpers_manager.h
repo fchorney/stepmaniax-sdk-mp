@@ -170,7 +170,7 @@ public:
 
     void AddDevice(const string &path, FakeDevice *pDevice)
     {
-        m_aDevices.push_back({path, pDevice, false});
+        m_aDevices.push_back({path, pDevice, 0});
     }
 
     vector<HIDDeviceInfo> Enumerate(uint16_t, uint16_t) override
@@ -188,11 +188,15 @@ public:
 
     unique_ptr<IHIDDevice> Open(const string &path) override
     {
+        // The manager opens each path twice (a read handle and a write handle),
+        // so allow up to two opens per path. Both wrappers delegate to the same
+        // shared FakeDevice, mirroring two real handles to one physical device
+        // (reads queued and writes captured stay on the one backing).
         for(auto &d : m_aDevices)
         {
-            if(d.sPath == path && !d.bOpened)
+            if(d.sPath == path && d.iOpenCount < 2)
             {
-                d.bOpened = true;
+                d.iOpenCount++;
                 return unique_ptr<IHIDDevice>(new DeviceWrapper(d.pDevice));
             }
         }
@@ -203,7 +207,7 @@ public:
     void ResetOpened(const string &path)
     {
         for(auto &d : m_aDevices)
-            if(d.sPath == path) { d.bOpened = false; break; }
+            if(d.sPath == path) { d.iOpenCount = 0; break; }
     }
 
 private:
@@ -222,7 +226,7 @@ private:
     struct DeviceEntry {
         string sPath;
         FakeDevice *pDevice;
-        bool bOpened;
+        int iOpenCount;
     };
     vector<DeviceEntry> m_aDevices;
 };

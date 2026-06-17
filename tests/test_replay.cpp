@@ -51,18 +51,43 @@ public:
         size_t iIdx = static_cast<size_t>(stoi(path.substr(8)));
         if(iIdx >= m_aCaptures.size())
             return nullptr;
-        auto pDev = new ReplayHIDDevice(m_aCaptures[iIdx]);
-        m_aOpenedDevices.push_back(pDev);
-        return unique_ptr<IHIDDevice>(pDev);
+        // The manager opens each path twice (a read handle and a write handle).
+        // Both must share ONE ReplayHIDDevice: replayed reads are gated by write
+        // count, so writes issued on the write handle have to unlock the reads
+        // delivered on the read handle. Hand out non-owning views over the one
+        // shared backing per capture index.
+        if(iIdx >= m_aDevices.size())
+            m_aDevices.resize(iIdx + 1);
+        if(!m_aDevices[iIdx])
+        {
+            m_aDevices[iIdx] = make_shared<ReplayHIDDevice>(m_aCaptures[iIdx]);
+            m_aOpenedDevices.push_back(m_aDevices[iIdx].get());
+        }
+        return unique_ptr<IHIDDevice>(new ReplayView(m_aDevices[iIdx]));
     }
 
-    /// Returns raw pointers to opened replay devices for post-test verification.
-    /// Only valid while the SDK is still running (devices are owned by the SDK).
+    /// Returns raw pointers to opened replay devices (one per capture) for
+    /// post-test verification. Only valid while the SDK is still running.
     const vector<ReplayHIDDevice*> &GetOpenedDevices() const { return m_aOpenedDevices; }
 
 private:
+    // Non-owning view that shares one ReplayHIDDevice between the read and write
+    // handles (keeps it alive via shared_ptr; the connection deletes the view,
+    // not the backing).
+    class ReplayView : public IHIDDevice
+    {
+    public:
+        explicit ReplayView(shared_ptr<ReplayHIDDevice> p) : m_p(std::move(p)) {}
+        int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+        int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
+        void Close() override {}
+    private:
+        shared_ptr<ReplayHIDDevice> m_p;
+    };
+
     vector<string> m_aCaptures;
-    vector<ReplayHIDDevice*> m_aOpenedDevices;  // non-owning, for verification
+    vector<shared_ptr<ReplayHIDDevice>> m_aDevices;  // one shared backing per capture index
+    vector<ReplayHIDDevice*> m_aOpenedDevices;       // non-owning, for verification
 };
 
 // --- Helper: wait for condition with timeout ---

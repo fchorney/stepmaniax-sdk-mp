@@ -520,13 +520,24 @@ void SMXManager::AttemptConnections()
         if(!pSlot) { Log("No available slots for device."); break; }
 
         Log("Opening SMX device: " + dev.sPath);
-        auto pDevice = m_pEnumerator->Open(dev.sPath);
-        if(!pDevice)
+        // Open the path twice: a dedicated read handle for the USB polling thread
+        // and a dedicated write handle for the main thread, so a read never waits
+        // behind a blocking write. (macOS opens non-exclusively; see
+        // SMXHIDInterface.) Either open failing just retries on the next
+        // enumeration; the already-opened read handle is released on continue.
+        auto pReadDevice = m_pEnumerator->Open(dev.sPath);
+        if(!pReadDevice)
         {
-            Log("Error opening device: " + dev.sPath);
+            Log("Error opening device (read): " + dev.sPath);
             continue;
         }
-        pSlot->OpenDevice(dev.sPath, std::move(pDevice));
+        auto pWriteDevice = m_pEnumerator->Open(dev.sPath);
+        if(!pWriteDevice)
+        {
+            Log("Error opening device (write), will retry: " + dev.sPath);
+            continue;
+        }
+        pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice));
     }
 }
 

@@ -54,7 +54,7 @@ public:
 
     bool IsConnected() const;
 
-    bool OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pDevice) { return m_Connection.Open(sPath, std::move(pDevice)); }
+    bool OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice) { return m_Connection.Open(sPath, std::move(pReadDevice), std::move(pWriteDevice)); }
 
     void SetConnectionCallbacks();
     void CloseDevice();
