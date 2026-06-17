@@ -356,7 +356,11 @@ void SMXManager::USBPollingThreadMain()
         bool bHasReport6Data = false;
 
         {
-            lock_guard<recursive_mutex> lock(m_Lock);
+            // Only the poll lock here, never m_Lock, so a blocking USB write the
+            // main thread is performing under m_Lock can't stall input reads. The
+            // main thread takes m_PollLock only briefly when it opens/closes/swaps
+            // a connection, so the read handles this touches stay valid.
+            lock_guard<mutex> lock(m_PollLock);
             for(int i = 0; i < 2; i++)
             {
                 if(m_Devices[i].PollUSBData() || m_Devices[i].GetConnection()->HasReadError())
@@ -388,6 +392,9 @@ void SMXManager::ThreadMain()
             if(!sError.empty())
             {
                 Log(ssprintf("Device %i error: %s", i, sError.c_str()));
+                // Closing resets the connection's read handle, which the USB
+                // polling thread reads, so exclude it (we already hold m_Lock).
+                lock_guard<mutex> pollLock(m_PollLock);
                 m_Devices[i].CloseDevice();
             }
         }
@@ -537,7 +544,12 @@ void SMXManager::AttemptConnections()
             Log("Error opening device (write), will retry: " + dev.sPath);
             continue;
         }
-        pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice));
+        {
+            // Setting the connection's read handle races the USB polling thread,
+            // so hold m_PollLock (we already hold m_Lock here) while opening.
+            lock_guard<mutex> pollLock(m_PollLock);
+            pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice));
+        }
     }
 }
 
@@ -633,6 +645,10 @@ bool SMXManager::CorrectDeviceOrder()
 
     if(bSwap)
     {
+        // The swap moves both connections (read handles included) and re-binds
+        // callbacks, all of which the USB polling thread reads, so exclude it
+        // (we already hold m_Lock; lock order m_Lock -> m_PollLock).
+        lock_guard<mutex> pollLock(m_PollLock);
         SMXDevice temp(std::move(m_Devices[0]));
         m_Devices[0] = std::move(m_Devices[1]);
         m_Devices[1] = std::move(temp);

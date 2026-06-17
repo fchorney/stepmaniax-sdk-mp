@@ -43,6 +43,16 @@ public:
     int Read(uint8_t *buf, size_t len) override
     {
         lock_guard<mutex> lock(m_Mutex);
+        // Model reality: the device sends nothing until the host has written to
+        // it (the SDK's first write is the device-info request). With separate
+        // read/write handles the poll thread can call Read before the main
+        // thread issues that request; delivering a pre-queued response then would
+        // race ahead of the request and the SDK would (correctly) drop the
+        // unexpected device-info response, stalling the handshake. Gating reads on
+        // the first write keeps the request-before-response ordering regardless of
+        // thread interleaving.
+        if(!m_bWriteSeen)
+            return 0;
         if(m_iFailAfterReads > 0)
         {
             m_iReadCount++;
@@ -62,6 +72,7 @@ public:
     {
         {
             lock_guard<mutex> lock(m_Mutex);
+            m_bWriteSeen = true;
             if(m_bFailWrites)
                 return -1;
         }
@@ -155,6 +166,7 @@ private:
     vector<vector<uint8_t>> m_aConfigResponsePackets;
     int m_iFailAfterReads = 0;
     int m_iReadCount = 0;
+    bool m_bWriteSeen = false;
     bool m_bFailWrites = false;
     bool m_bCaptureWrites = false;
     vector<vector<uint8_t>> m_aCapturedWrites;

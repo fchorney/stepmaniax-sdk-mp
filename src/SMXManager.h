@@ -87,6 +87,15 @@ private:
 
     // --- Synchronization and threading ---
     std::recursive_mutex m_Lock;                // Protects all mutable state below
+    // Guards the USB polling thread's access to the device read handles and the
+    // m_Devices array shape, separate from m_Lock so a blocking write held under
+    // m_Lock (CheckWrites) can never stall input reads. The USB polling thread
+    // takes ONLY this lock; the main thread takes m_Lock and then m_PollLock
+    // (lock order: m_Lock -> m_PollLock) only when it opens, closes, or swaps a
+    // connection. The input callback fired from PollUSBData runs under this lock
+    // and must not call back into m_Lock-taking SMX_* APIs (SMX_GetInputState is
+    // lock-free and safe); see the threading notes in SMXDeviceConnection.h.
+    std::mutex m_PollLock;
     std::thread m_Thread;                       // Main I/O thread (connections, commands, config)
     std::thread m_USBPollingThread;             // USB polling thread (input state reads)
     std::thread::id m_MainThreadId;             // For deadlock detection in destructor
