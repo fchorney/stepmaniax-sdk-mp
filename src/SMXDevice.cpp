@@ -57,7 +57,13 @@ SMXDevice &SMXDevice::operator=(SMXDevice &&other) noexcept
 {
     if(this != &other)
     {
-        m_pLock = other.m_pLock;
+        // Deliberately do NOT reassign m_pLock. The lock pointer is a property of
+        // the slot, fixed when the manager calls SetLock at startup, and is the
+        // same for every device. Methods read m_pLock to acquire the lock BEFORE
+        // holding it, so writing it here (during the CorrectDeviceOrder swap,
+        // which holds the lock) would race that lock-free read. Keeping the
+        // destination's existing m_pLock avoids the race and is equivalent, since
+        // all managed devices share one lock.
         m_iPadIndex = other.m_iPadIndex;
         m_pUpdateCallback = std::move(other.m_pUpdateCallback);
         m_Connection = std::move(other.m_Connection);

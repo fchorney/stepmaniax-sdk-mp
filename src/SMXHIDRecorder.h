@@ -86,8 +86,18 @@ public:
     int Write(const uint8_t *buf, size_t len) override;
     void Close() override;
 
-    const std::vector<std::vector<uint8_t>> &GetExpectedWrites() const { return m_aExpectedWrites; }
-    const std::vector<std::vector<uint8_t>> &GetActualWrites() const { return m_aActualWrites; }
+    // Return copies under the lock: Write() appends to m_aActualWrites from the
+    // I/O thread while tests read these from another thread.
+    std::vector<std::vector<uint8_t>> GetExpectedWrites() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_aExpectedWrites;
+    }
+    std::vector<std::vector<uint8_t>> GetActualWrites() const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        return m_aActualWrites;
+    }
 
 private:
     // Read batches: m_aReadBatches[i] contains reads available after i writes have occurred.
@@ -95,7 +105,7 @@ private:
     int m_iWriteCount = 0;
     std::vector<std::vector<uint8_t>> m_aExpectedWrites;
     std::vector<std::vector<uint8_t>> m_aActualWrites;
-    std::mutex m_Mutex;
+    mutable std::mutex m_Mutex;
 };
 
 // --- Utility: load all records from a capture file ---

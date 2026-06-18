@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(smx-sdk-mp VERSION 1.3.0 LANGUAGES CXX)
+project(smx-sdk-mp VERSION 1.4.0 LANGUAGES CXX)
 
 # Generate version header from project version
 configure_file(src/SMXVersion.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/SMXVersion.h)
@@ -121,6 +121,11 @@ if(BUILD_SAMPLE)
     # Sensor sampling-rate probe (lights-on vs lights-off, per pad).
     add_executable(smx-sensor-rate sample/sensor_rate.cpp)
     target_link_libraries(smx-sensor-rate PRIVATE smx-mp)
+
+    # Read/write HID handle probe: validates the double-open and that reads stay
+    # fast under write load (links smx-mp for the propagated hidapi includes).
+    add_executable(smx-rw-probe sample/rw_probe.cpp)
+    target_link_libraries(smx-rw-probe PRIVATE smx-mp)
 endif()
 
 # Tests

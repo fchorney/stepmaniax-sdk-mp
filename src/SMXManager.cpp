@@ -58,13 +58,15 @@ SMXManager::~SMXManager()
 {
     // Detect if SMX_Stop() is being called from within a callback (which would deadlock).
     auto thisId = this_thread::get_id();
-    if(thisId == m_MainThreadId || thisId == m_USBPollingThreadId)
+    const thread::id mainId = m_MainThreadId.load();
+    const thread::id usbId = m_USBPollingThreadId.load();
+    if(thisId == mainId || thisId == usbId)
     {
         Log(ssprintf("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting. "
                      "(caller=%s, main=%s, usb=%s)",
-                     thisId == m_MainThreadId ? "MainThread" : "USBThread",
-                     m_MainThreadId == thread::id() ? "unset" : "set",
-                     m_USBPollingThreadId == thread::id() ? "unset" : "set"));
+                     thisId == mainId ? "MainThread" : "USBThread",
+                     mainId == thread::id() ? "unset" : "set",
+                     usbId == thread::id() ? "unset" : "set"));
         abort();
     }
 
@@ -350,13 +352,17 @@ void SMXManager::SetInputStateMode(bool bAlwaysFire)
 
 void SMXManager::USBPollingThreadMain()
 {
-    m_USBPollingThreadId = this_thread::get_id();
+    m_USBPollingThreadId.store(this_thread::get_id());
     while(!m_bShutdown)
     {
         bool bHasReport6Data = false;
 
         {
-            lock_guard<recursive_mutex> lock(m_Lock);
+            // Only the poll lock here, never m_Lock, so a blocking USB write the
+            // main thread is performing under m_Lock can't stall input reads. The
+            // main thread takes m_PollLock only briefly when it opens/closes/swaps
+            // a connection, so the read handles this touches stay valid.
+            lock_guard<mutex> lock(m_PollLock);
             for(int i = 0; i < 2; i++)
             {
                 if(m_Devices[i].PollUSBData() || m_Devices[i].GetConnection()->HasReadError())
@@ -373,7 +379,7 @@ void SMXManager::USBPollingThreadMain()
 
 void SMXManager::ThreadMain()
 {
-    m_MainThreadId = this_thread::get_id();
+    m_MainThreadId.store(this_thread::get_id());
     m_Lock.lock();
     while(!m_bShutdown)
     {
@@ -388,6 +394,9 @@ void SMXManager::ThreadMain()
             if(!sError.empty())
             {
                 Log(ssprintf("Device %i error: %s", i, sError.c_str()));
+                // Closing resets the connection's read handle, which the USB
+                // polling thread reads, so exclude it (we already hold m_Lock).
+                lock_guard<mutex> pollLock(m_PollLock);
                 m_Devices[i].CloseDevice();
             }
         }
@@ -520,13 +529,29 @@ void SMXManager::AttemptConnections()
         if(!pSlot) { Log("No available slots for device."); break; }
 
         Log("Opening SMX device: " + dev.sPath);
-        auto pDevice = m_pEnumerator->Open(dev.sPath);
-        if(!pDevice)
+        // Open the path twice: a dedicated read handle for the USB polling thread
+        // and a dedicated write handle for the main thread, so a read never waits
+        // behind a blocking write. (macOS opens non-exclusively; see
+        // SMXHIDInterface.) Either open failing just retries on the next
+        // enumeration; the already-opened read handle is released on continue.
+        auto pReadDevice = m_pEnumerator->Open(dev.sPath);
+        if(!pReadDevice)
         {
-            Log("Error opening device: " + dev.sPath);
+            Log("Error opening device (read): " + dev.sPath);
             continue;
         }
-        pSlot->OpenDevice(dev.sPath, std::move(pDevice));
+        auto pWriteDevice = m_pEnumerator->Open(dev.sPath);
+        if(!pWriteDevice)
+        {
+            Log("Error opening device (write), will retry: " + dev.sPath);
+            continue;
+        }
+        {
+            // Setting the connection's read handle races the USB polling thread,
+            // so hold m_PollLock (we already hold m_Lock here) while opening.
+            lock_guard<mutex> pollLock(m_PollLock);
+            pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice));
+        }
     }
 }
 
@@ -622,6 +647,10 @@ bool SMXManager::CorrectDeviceOrder()
 
     if(bSwap)
     {
+        // The swap moves both connections (read handles included) and re-binds
+        // callbacks, all of which the USB polling thread reads, so exclude it
+        // (we already hold m_Lock; lock order m_Lock -> m_PollLock).
+        lock_guard<mutex> pollLock(m_PollLock);
         SMXDevice temp(std::move(m_Devices[0]));
         m_Devices[0] = std::move(m_Devices[1]);
         m_Devices[1] = std::move(temp);

@@ -914,3 +914,75 @@ TEST_CASE("SMX_SetPanelTestMode with no devices does not crash") {
 
     SMX_Stop();
 }
+
+// Enumerator that fails the 2nd open of a path exactly once, to exercise the
+// manager's two-handle open: the read handle (1st open) succeeds but the write
+// handle (2nd open) fails on the first connect attempt. The path must NOT be
+// abandoned; the device should connect on the next enumeration once both opens
+// succeed. All opens delegate to one shared FakeDevice (two real handles, one
+// physical device).
+class WriteOpenFailsOnceEnumerator : public IHIDEnumerator {
+public:
+    WriteOpenFailsOnceEnumerator(string sPath, FakeDevice *pDevice)
+        : m_sPath(std::move(sPath)), m_pDevice(pDevice) {}
+
+    void Init() override {}
+    void Exit() override {}
+
+    vector<HIDDeviceInfo> Enumerate(uint16_t, uint16_t) override {
+        HIDDeviceInfo info;
+        info.sPath = m_sPath;
+        info.sProduct = SMX_USB_PRODUCT_STRING;
+        return { info };
+    }
+
+    unique_ptr<IHIDDevice> Open(const string &path) override {
+        if(path != m_sPath)
+            return nullptr;
+        m_iOpenCalls++;
+        // The 2nd open is the write handle on the first connect attempt: fail it
+        // once so the manager has to retry on the next enumeration.
+        if(m_iOpenCalls == 2)
+            return nullptr;
+        return unique_ptr<IHIDDevice>(new Wrapper(m_pDevice));
+    }
+
+    int GetOpenCalls() const { return m_iOpenCalls; }
+
+private:
+    class Wrapper : public IHIDDevice {
+    public:
+        explicit Wrapper(FakeDevice *p) : m_p(p) {}
+        int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+        int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
+        void Close() override {}
+    private:
+        FakeDevice *m_p;
+    };
+
+    string m_sPath;
+    FakeDevice *m_pDevice;
+    int m_iOpenCalls = 0;
+};
+
+TEST_CASE("Transient write-handle open failure retries and connects") {
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new WriteOpenFailsOnceEnumerator("/dev/hidraw0", pFakeDevice);
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    SMXInfo infoResult = {};
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    // Enumeration is rate-limited (~1s), so the retry lands on a later pass.
+    bool bConnected = WaitFor([&]() {
+        SMX_GetInfo(0, &infoResult);
+        return infoResult.m_bConnected;
+    }, 4000);
+
+    CHECK(bConnected);
+    CHECK(infoResult.m_iFirmwareVersion == 5);
+
+    SMX_Stop();
+}

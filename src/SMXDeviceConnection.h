@@ -91,7 +91,8 @@ struct SMXDeviceInfo
 ///   - m_bActive, m_bGotInfo: connection state
 ///
 ///   Main Thread Only (no synchronization needed):
-///   - m_pDevice, m_sPath, m_DeviceInfo: immutable after Open()
+///   - m_pWriteDevice, m_sPath, m_DeviceInfo: immutable after Open()
+///   - m_pReadDevice: used only by PollUSBData() on the USB polling thread
 ///
 ///   Protected by External Lock (read by USB thread, written by main thread):
 ///   - m_pInputStateChangedCallback: read in PollUSBData(), set via SetConnectionCallbacks()
@@ -125,22 +126,25 @@ public:
     SMXDeviceConnection(SMXDeviceConnection &&other) noexcept;
     SMXDeviceConnection &operator=(SMXDeviceConnection &&other) noexcept;
 
-    /// Opens a HID connection using the provided device handle.
-    /// Automatically requests device info and enters a pending state until the info arrives.
+    /// Opens a HID connection using two independent handles to the same device:
+    /// one for reads (USB polling thread) and one for writes (main I/O thread),
+    /// so a read never waits behind a blocking write. Automatically requests
+    /// device info and enters a pending state until the info arrives.
     /// @param sPath HID device path string (stored for identification).
-    /// @param pDevice Opened HID device to use for communication.
+    /// @param pReadDevice Opened HID handle used only by PollUSBData (reads).
+    /// @param pWriteDevice Opened HID handle used only by CheckWrites (writes).
     /// @return True if the device was successfully opened.
-    bool Open(const std::string &sPath, std::unique_ptr<IHIDDevice> pDevice);
+    bool Open(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice);
 
     /// Closes the connection and cancels all pending commands.
     /// Invokes completion callbacks with empty strings to notify of cancellation.
     void Close();
 
     /// Returns true if the HID connection is open (though device info may not be retrieved yet).
-    bool IsConnected() const { return m_pDevice != nullptr; }
+    bool IsConnected() const { return m_pWriteDevice != nullptr; }
 
     /// Returns true if the connection is open AND device info has been received.
-    bool IsConnectedWithDeviceInfo() const { return m_pDevice != nullptr && m_bGotInfo; }
+    bool IsConnectedWithDeviceInfo() const { return m_pWriteDevice != nullptr && m_bGotInfo; }
 
     /// Returns the HID device path.
     const std::string &GetPath() const { return m_sPath; }
@@ -236,8 +240,14 @@ private:
     /// @param iLen Total length of the packet (header + payload).
     void HandleUsbPacket(const char *pData, size_t iLen);
 
-    // --- Connection state (immutable after Open, main thread only) ---
-    std::unique_ptr<IHIDDevice> m_pDevice;  // HID device handle (nullptr when disconnected)
+    // --- Connection state ---
+    // Two independent handles to the same physical device. The read handle is
+    // used only by PollUSBData (USB polling thread); the write handle only by
+    // CheckWrites (main I/O thread). Splitting them means a read never waits
+    // behind a blocking write. Both are set together by Open() and reset
+    // together by Close().
+    std::unique_ptr<IHIDDevice> m_pReadDevice;   // Reads only (USB polling thread)
+    std::unique_ptr<IHIDDevice> m_pWriteDevice;  // Writes only (main I/O thread)
     std::string m_sPath;                    // HID device path for identification
     bool m_bActive = false;                 // True after activation command sent
     bool m_bGotInfo = false;                // True once device info response received

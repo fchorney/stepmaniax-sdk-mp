@@ -1,6 +1,9 @@
 #include "SMXHIDInterface.h"
 
 #include <hidapi/hidapi.h>
+#if defined(__APPLE__)
+#include <hidapi/hidapi_darwin.h>
+#endif
 
 using namespace std;
 
@@ -42,7 +45,17 @@ private:
 class HIDAPIEnumerator : public IHIDEnumerator
 {
 public:
-    void Init() override { hid_init(); }
+    void Init() override
+    {
+        hid_init();
+#if defined(__APPLE__)
+        // macOS opens IOHIDDevice exclusively by default, so a second open of
+        // the same path (the separate read and write handles) fails with
+        // kIOReturnExclusiveAccess. Open non-exclusively instead. Linux (hidraw)
+        // and Windows already allow shared opens of the same device.
+        hid_darwin_set_open_exclusive(0);
+#endif
+    }
     void Exit() override { hid_exit(); }
 
     vector<HIDDeviceInfo> Enumerate(uint16_t vid, uint16_t pid) override

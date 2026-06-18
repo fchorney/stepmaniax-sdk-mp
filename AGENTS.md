@@ -13,6 +13,10 @@ This SDK uses a two-thread design (vs the original's single I/O thread):
 - **USB polling thread** — runs at ~1ms intervals, reads HID data from both pads. Report 3 (input state) is parsed inline and updates an atomic variable immediately. Report 6 packets are buffered for the main thread.
 - **Main I/O thread** — runs at ~50ms intervals, handles device discovery, connection management, configuration, and command processing. Consumes Report 6 data from the USB polling thread.
 
+The two threads are decoupled so input reads never wait behind a blocking USB write:
+- **Separate read/write HID handles.** Each device path is opened twice. `PollUSBData` reads on the read handle; `CheckWrites` writes on the write handle. Independent OS handles let a read and a write run concurrently. macOS needs `hid_darwin_set_open_exclusive(0)` (set in `SMXHIDInterface`) for the second open; Linux/Windows already allow shared opens.
+- **Two locks.** The poll thread takes only `m_PollLock`; the main thread holds `m_Lock` across its writes and takes both (`m_Lock → m_PollLock`) only when opening/closing/swapping a connection. The poll thread never takes `m_Lock`, so a blocking write can't stall polling and the ordering is deadlock-free. The input callback fires under `m_PollLock` and must not call back into `m_Lock`-taking `SMX_*` APIs (`SMX_GetInputState` is lock-free).
+
 Key design decisions:
 - Uses **hidapi** behind an abstraction layer (`IHIDDevice`/`IHIDEnumerator` interfaces in `SMXHIDInterface.h`). Only `SMXHIDInterface.cpp` touches hidapi directly, making the HID backend swappable and testable.
 - Core logic is split into logical files: **SMXHelpers** (utilities), **SMXDevice** (per-controller logic), **SMXManager** (orchestration/threading), and **SMX.cpp** (public C API).
@@ -154,7 +158,7 @@ See README.md for platform-specific instructions and all build options.
 ## Key considerations when contributing
 
 1. **Input latency is paramount.** Any change to the USB polling thread or Report 3 handling path must not add latency. The atomic update of input state must remain lock-free.
-2. **Thread safety.** The two-thread model requires careful attention to which thread owns which data. See the threading documentation in `SMXDeviceConnection.h` for the full breakdown.
+2. **Thread safety.** The two-thread model requires careful attention to which thread owns which data, which lock guards it, and which HID handle it uses (poll thread = read handle + `m_PollLock`; main thread = write handle + `m_Lock`). Keep `m_Lock → m_PollLock` ordering and never make the poll thread take `m_Lock`. See the threading documentation in `SMXDeviceConnection.h` and the Concurrency section in `docs/API_CODE_PATHS.md` for the full breakdown. New concurrency-affecting changes should be verified under ThreadSanitizer (`-DCMAKE_CXX_FLAGS=-fsanitize=thread`).
 3. **Keep the public API minimal.** Only `SMX_*` functions are exported. Internal classes and helpers stay in the `SMX` namespace or anonymous namespaces.
 4. **Cross-platform.** All code must build and work on Linux, macOS (Intel + Apple Silicon), and Windows. Use standard C++14 and hidapi — no platform-specific code in the core logic.
 5. **Reference the original SDK.** When implementing new features, consult `original_sdk/` for protocol details and expected behavior, but don't copy its architecture decisions blindly.
