@@ -126,6 +126,11 @@ if(BUILD_SAMPLE)
     # fast under write load (links smx-mp for the propagated hidapi includes).
     add_executable(smx-rw-probe sample/rw_probe.cpp)
     target_link_libraries(smx-rw-probe PRIVATE smx-mp)
+
+    # USB input timing probe: histograms inter-state-change intervals to
+    # characterize the USB 1ms precision floor and drain artifact rate.
+    add_executable(smx-input-timing sample/input_timing.cpp)
+    target_link_libraries(smx-input-timing PRIVATE smx-mp)
 endif()
 
 # Tests
