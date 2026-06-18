@@ -43,7 +43,9 @@ This document traces the execution path of each public `SMX_*` API function thro
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     SMXDeviceConnection                                  │
 │                                                                         │
-│   - Owns IHIDDevice (one open USB connection)                           │
+│   - Owns TWO IHIDDevice handles to the same device:                     │
+│       read handle  (PollUSBData, USB polling thread)                    │
+│       write handle (CheckWrites, main I/O thread)                       │
 │   - Command queue (fragment, send, await response)                      │
 │   - Report 6 buffer (USB thread → main thread handoff)                  │
 │   - Atomic m_iInputState (USB thread writes, anyone reads)              │
@@ -87,6 +89,33 @@ This document traces the execution path of each public `SMX_*` API function thro
 └──────────────────┘         └──────────────────┘         └──────────────┘
 ```
 
+## Concurrency: two locks, two HID handles
+
+Input reads must never wait behind a blocking USB write. Two design choices keep
+them independent:
+
+- **Separate read/write HID handles.** Each `SMXDeviceConnection` opens the
+  device path twice: a *read handle* used only by `PollUSBData` (USB polling
+  thread) and a *write handle* used only by `CheckWrites` (main I/O thread).
+  Because they are independent OS handles, a read and a write can run at the same
+  time without serializing on one handle. (macOS opens IOHIDDevice exclusively by
+  default, so the SDK calls `hid_darwin_set_open_exclusive(0)` to allow the second
+  open; Linux and Windows already allow shared opens.)
+
+- **Two locks.** `m_Lock` (recursive) guards manager/connection state and is held
+  by the main thread across its blocking writes. The USB polling thread takes a
+  separate `m_PollLock` *only* — never `m_Lock` — so a write in flight under
+  `m_Lock` cannot stall input polling. The main thread takes both (order
+  `m_Lock → m_PollLock`) only when it opens, closes, or swaps a connection (the
+  moments it mutates the read handles / device array the poll thread reads). The
+  poll thread never takes `m_Lock`, so the ordering is deadlock-free.
+
+The input-state callback fires from `PollUSBData` under `m_PollLock`. It must not
+call back into `m_Lock`-taking `SMX_*` APIs (`SMX_GetInputState` is lock-free and
+safe). `m_iInputState`, the Report 6 buffer (own mutex), and the read-error flag
+are the only state shared between the two threads during steady-state polling,
+and all are synchronized independently of `m_Lock`.
+
 ## API Function Code Paths
 
 ### SMX_Start
@@ -110,8 +139,9 @@ SMX_Start(callback, pUser)
    │       │   ├─ Enumerate(VID=0x2341, PID=0x8037)
    │       │   ├─ Filter by product string "StepManiaX"
    │       │   ├─ Skip already-open paths
-   │       │   ├─ Open() → IHIDDevice
-   │       │   └─ SMXDevice::OpenDevice(path, device)
+   │       │   ├─ Open() the path TWICE → read handle + write handle
+   │       │   │   (2nd open failing just retries on the next enumeration)
+   │       │   └─ SMXDevice::OpenDevice(path, readDevice, writeDevice) [under m_PollLock]
    │       │       └─ SMXDeviceConnection::Open()
    │       │           └─ RequestDeviceInfo() [queues device info command]
    │       ├─ Update() each device
@@ -121,9 +151,9 @@ SMX_Start(callback, pUser)
    │
    └─ Spawn USB polling thread → USBPollingThreadMain()
        └─ Loop until shutdown:
-           ├─ Lock m_Lock
+           ├─ Lock m_PollLock  (NOT m_Lock — see Concurrency below)
            ├─ PollUSBData() on each device
-           │   ├─ Read HID packets (non-blocking)
+           │   ├─ Read HID packets from the READ handle (non-blocking)
            │   ├─ Report 3: parse inline, atomic store m_iInputState
            │   └─ Report 6: buffer for main thread
            ├─ Unlock

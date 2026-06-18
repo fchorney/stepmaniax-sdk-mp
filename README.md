@@ -85,6 +85,11 @@ This SDK uses a two-thread design that differs from the original StepManiaX SDK.
 
 Both thread sleep intervals are configurable via `SMX_SetPollingRate(int mainThreadMs, int usbPollingUs)`. The USB polling thread defaults to 1000us between cycles; the main thread defaults to 50ms.
 
+To keep input reads from ever waiting behind a blocking USB write, the two threads are fully decoupled:
+
+- **Separate read/write HID handles.** Each device is opened twice: the USB polling thread reads on its own handle and the main thread writes (lights, sensor requests, config) on its own. Independent OS handles mean a read and a write run concurrently instead of serializing on one handle. On macOS the SDK opens non-exclusively (`hid_darwin_set_open_exclusive(0)`) so the second handle can open; Linux and Windows already allow shared opens.
+- **Separate locks.** The polling thread takes a dedicated lock (never the manager lock the main thread holds across its writes), so light/sensor/config writes can't stall input polling. The main thread only briefly takes both locks when it opens, closes, or reorders a connection. The input-state callback fires under the poll lock and must not call back into lock-taking `SMX_*` APIs (`SMX_GetInputState` is lock-free and safe to call from it).
+
 ### Device report rate
 
 The USB polling thread reads as fast as the device sends data, but the actual input report rate is determined by the pad's firmware, not the SDK's polling interval. Based on observation (the pad firmware is not open source):
