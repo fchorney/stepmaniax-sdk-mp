@@ -12,6 +12,19 @@
 #include <csignal>
 #endif
 
+// Detect ThreadSanitizer (clang via __has_feature, gcc via __SANITIZE_THREAD__).
+#if defined(__has_feature)
+#  if __has_feature(thread_sanitizer)
+#    define SMX_TSAN 1
+#  endif
+#endif
+#if defined(__SANITIZE_THREAD__)
+#  define SMX_TSAN 1
+#endif
+#ifndef SMX_TSAN
+#  define SMX_TSAN 0
+#endif
+
 TEST_CASE("SMX_Version returns a valid version string") {
     const char *version = SMX_Version();
     REQUIRE(version != nullptr);
@@ -72,6 +85,13 @@ TEST_CASE("SMX_Start with nullptr callback does not crash") {
 
 #ifndef _WIN32
 TEST_CASE("SMX_Stop from callback aborts") {
+#if SMX_TSAN
+    // ThreadSanitizer doesn't support starting threads in a process forked from a
+    // multithreaded parent, so this fork-based death test isn't meaningful under
+    // TSan (the child would die from TSan's own check, not the SDK's abort). Skip
+    // it there; it runs normally in the regular build.
+    MESSAGE("skipped under ThreadSanitizer (fork of a multithreaded process is unsupported)");
+#else
     // Fork a child process that calls SMX_Stop from within the update callback.
     // The child should receive SIGABRT.
     pid_t pid = fork();
@@ -115,5 +135,6 @@ TEST_CASE("SMX_Stop from callback aborts") {
     // Child should have been killed by SIGABRT.
     CHECK(WIFSIGNALED(status));
     CHECK(WTERMSIG(status) == SIGABRT);
+#endif // SMX_TSAN
 }
-#endif
+#endif // !_WIN32
