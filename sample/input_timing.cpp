@@ -11,18 +11,21 @@
 // floor.
 //
 // Build: cmake -B build -DBUILD_SAMPLE=ON && cmake --build build --target smx-input-timing
-// Run:   ./build/smx-input-timing [duration_secs] [poll_sleep_us]
+// Run:   ./build/smx-input-timing [poll_sleep_us]
 //
-// duration_secs: how long to collect data (default: 60)
 // poll_sleep_us: USB poll thread sleep in microseconds (default: 500)
 //   Lower = less latency between USB report arrival and detection.
 //   2000Hz (500us) is a good default: polls twice per USB frame for
 //   max 1.5ms total latency with minimal CPU overhead.
 //   Diminishing returns past 4000Hz (250us) since USB jitter dominates.
+//
+// Press Ctrl+C to stop and print the session summary.
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cinttypes>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +53,7 @@ struct PadStats {
     uint64_t burst_count = 0;
 };
 
+static std::atomic<bool> g_running{true};
 static std::mutex g_mutex;
 static PadStats g_stats[2];
 static bool g_connected[2] = {false, false};
@@ -160,16 +164,16 @@ static void PrintResults()
 
 int main(int argc, char **argv)
 {
-    const int duration_secs = argc > 1 ? atoi(argv[1]) : 60;
-    const int poll_us       = argc > 2 ? atoi(argv[2]) : 500;
+    const int poll_us = argc > 1 ? atoi(argv[1]) : 500;
+
+    signal(SIGINT,  [](int){ g_running = false; });
+    signal(SIGTERM, [](int){ g_running = false; });
 
     printf("SMX Input Timing Probe\n");
-    printf("USB poll sleep: %d us (%d Hz)  |  duration: %ds\n",
-           poll_us, 1000000 / poll_us, duration_secs);
+    printf("USB poll sleep: %d us (%d Hz)\n", poll_us, 1000000 / poll_us);
     printf("Precision floor: ~1ms (Full Speed USB frame)."
            " Gaps < %" PRIu64 "us are drain artifacts.\n\n",
            BURST_THRESHOLD_US);
-    printf("Step rapidly on any panel during the run.\n\n");
 
     SMX_Start(OnStateChanged, nullptr);
     SMX_SetPollingRate(50, poll_us);
@@ -178,7 +182,7 @@ int main(int argc, char **argv)
     fflush(stdout);
     const auto deadline = steady_clock::now() + seconds(15);
     bool any = false;
-    while(steady_clock::now() < deadline)
+    while(g_running && steady_clock::now() < deadline)
     {
         {
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -197,13 +201,9 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    printf("Running for %ds -- step rapidly on any panel.\n", duration_secs);
-    for(int i = 0; i < duration_secs; i++)
-    {
-        std::this_thread::sleep_for(seconds(1));
-        printf(".");
-        fflush(stdout);
-    }
+    printf("Step rapidly on any panel. Press Ctrl+C to stop.\n");
+    while(g_running)
+        std::this_thread::sleep_for(milliseconds(100));
     printf("\n\n");
 
     SMX_Stop();
