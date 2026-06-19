@@ -334,7 +334,11 @@ TEST_CASE("Replay: factory reset")
         },
         &cbData, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return cbData.bConnected.load(); }, 5000));
+    // Wait for slot 0 specifically (info + config). With per-pad poll threads the
+    // two replay devices complete their handshakes independently, so a generic
+    // "any pad connected" flag can fire for the other slot before slot 0 has its
+    // config, and the GetConfig(0) below would race it.
+    REQUIRE(WaitFor([&]() { SMXInfo info = {}; SMX_GetInfo(0, &info); return info.m_bConnected; }, 5000));
 
     // Verify we can read config after connection
     SMXConfig cfg = {};
@@ -388,7 +392,11 @@ TEST_CASE("Replay: config get/set")
         },
         &cbData, unique_ptr<IHIDEnumerator>(pEnum));
 
-    REQUIRE(WaitFor([&]() { return cbData.bConnected.load(); }, 5000));
+    // Wait for slot 0 specifically (info + config). With per-pad poll threads the
+    // two replay devices complete their handshakes independently, so a generic
+    // "any pad connected" flag can fire for the other slot before slot 0 has its
+    // config, and the GetConfig(0) below would race it.
+    REQUIRE(WaitFor([&]() { SMXInfo info = {}; SMX_GetInfo(0, &info); return info.m_bConnected; }, 5000));
 
     // Verify we can read config after connection
     SMXConfig cfg = {};
