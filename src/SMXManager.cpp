@@ -344,6 +344,10 @@ void SMXManager::SetPanelTestMode(PanelTestMode mode)
 
 void SMXManager::SetInputStateMode(bool bAlwaysFire)
 {
+    // Remember the mode so it is re-applied to pads that connect later (their
+    // shared state is created fresh on Open, defaulting to change-only), then
+    // apply it to any already-connected pads now.
+    m_bAlwaysFireInput.store(bAlwaysFire, memory_order_relaxed);
     for(auto &device : m_Devices)
         device.GetConnection()->SetAlwaysFireInputCallback(bAlwaysFire);
 }
@@ -570,7 +574,14 @@ void SMXManager::AttemptConnections()
         // reaped on close), so there is nothing to stop first.
         const int slot = static_cast<int>(pSlot - &m_Devices[0]);
         if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice)))
+        {
+            // The shared state was just created with change-only as the default;
+            // re-apply the remembered all-packets mode before the poll thread
+            // starts so it takes effect from the first read.
+            if(m_bAlwaysFireInput.load(memory_order_relaxed))
+                pSlot->GetConnection()->SetAlwaysFireInputCallback(true);
             SpawnPollThread(slot, std::move(pPoll));
+        }
     }
 }
 

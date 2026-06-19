@@ -346,6 +346,44 @@ TEST_CASE("SMX_GetInputState returns panel state through full stack") {
     SMX_Stop();
 }
 
+TEST_CASE("All-packets input mode set before connect applies to the pad") {
+    // Regression: a connection's shared state (including the all-packets flag) is
+    // created fresh on Open, so SMX_SetInputStateMode(true) called before the pad
+    // connects must be re-applied on connect. Otherwise the callback reverts to
+    // change-only and duplicate (e.g. idle-heartbeat) packets are dropped.
+    auto pFakeDevice = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice);
+
+    pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice->SetConfigResponse(MakeConfigResponse());
+
+    atomic<int> iInputCallbacks{0};
+    auto callback = [](int, SMXUpdateCallbackReason reason, void *pUser) {
+        if(reason & SMXUpdateCallback_InputState)
+            static_cast<atomic<int>*>(pUser)->fetch_add(1);
+    };
+
+    SMX_StartWithEnumerator(callback, &iInputCallbacks, unique_ptr<IHIDEnumerator>(pEnum));
+
+    // Request all-packets mode BEFORE the pad connects.
+    SMX_SetInputStateMode(true);
+
+    SMXInfo info = {};
+    REQUIRE(WaitFor([&]() { SMX_GetInfo(0, &info); return info.m_bConnected; }));
+
+    // Five identical Report 3 packets: the first is a change from 0 (fires in
+    // either mode); the next four are duplicates that fire only in all-packets
+    // mode. So all five callbacks arriving proves the mode survived the connect.
+    for(int i = 0; i < 5; i++)
+        pFakeDevice->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
+
+    bool bAllFired = WaitFor([&]() { return iInputCallbacks.load() >= 5; }, 3000);
+    CHECK(bAllFired);
+
+    SMX_Stop();
+}
+
 // =========================================================================
 // SMX_SetSerialNumbers command format
 // =========================================================================

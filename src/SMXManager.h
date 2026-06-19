@@ -133,6 +133,12 @@ private:
     // --- Main loop cadence ---
     std::atomic<int> m_iMainThreadSleepMs{50};  // Main thread sleep between iterations (ms)
 
+    // Whether the input callback fires on every Report 3 packet (all-packets
+    // mode) or only on change. Remembered here because a connection's shared
+    // state is recreated on each Open, so this must be re-applied to every newly
+    // connected pad (not just the ones connected when SetInputStateMode is called).
+    std::atomic<bool> m_bAlwaysFireInput{false};
+
     // --- Devices and discovery ---
     SMXDevice m_Devices[2];                     // Pad slots: index 0 = P1, index 1 = P2
     std::string m_asPlayerAssignment[2];        // Serial pinned to each slot (empty = follow jumper)
