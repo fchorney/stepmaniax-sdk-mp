@@ -73,9 +73,10 @@ TEST_CASE("Pad swap: connected callback fires with correct pad index after reord
 }
 
 TEST_CASE("Pad swap: input state callback fires for correct pad after reorder") {
-    // After a swap, the input state changed lambda (which captures 'this')
-    // must be re-bound via SetConnectionCallbacks(). If not, input state
-    // changes would fire with the wrong pad index.
+    // After a swap, input state must still fire with the correct pad index. The
+    // input callback is installed once at open and reads the connection's shared
+    // pad index (which SetPadIndex updates on the swap), so no rebinding is
+    // needed; this verifies that mechanism end to end.
     auto pFakeP2 = new FakeDevice();
     auto pFakeP1 = new FakeDevice();
     auto pEnum = new FakeHIDEnumerator();

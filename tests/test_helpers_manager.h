@@ -68,6 +68,21 @@ public:
         return static_cast<int>(n);
     }
 
+    int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override
+    {
+        // Model an interrupt-driven blocking read without stalling the test for
+        // the full timeout: deliver any queued data (or a read error) at once,
+        // otherwise park briefly (capped at 1ms, the ~1ms USB frame) so the
+        // per-pad poll loop sleeps instead of busy-spinning, then report no data.
+        int n = Read(buf, len);
+        if(n != 0)
+            return n;
+        int iSleepMs = iTimeoutMs < 0 ? 1 : min(iTimeoutMs, 1);
+        if(iSleepMs > 0)
+            this_thread::sleep_for(chrono::milliseconds(iSleepMs));
+        return 0;
+    }
+
     int Write(const uint8_t *buf, size_t len) override
     {
         {
@@ -137,6 +152,18 @@ public:
     {
         lock_guard<mutex> lock(m_Mutex);
         m_bFailWrites = b;
+    }
+
+    // Models a fresh handle being opened (e.g. on reconnection): until the host
+    // writes again, reads return nothing. This re-enforces request-before-response
+    // ordering for the next handshake; without it, a freshly spawned poll thread
+    // could read a queued device-info response before the new request is sent, and
+    // the connection would drop it (no current device-info command), stalling the
+    // handshake.
+    void ResetWriteSeen()
+    {
+        lock_guard<mutex> lock(m_Mutex);
+        m_bWriteSeen = false;
     }
 
     void SetCaptureWrites(bool b) { m_bCaptureWrites = b; }
@@ -215,11 +242,13 @@ public:
         return nullptr;
     }
 
-    /// Resets the opened state for a device, allowing it to be re-opened (simulates reconnection).
+    /// Resets the opened state for a device, allowing it to be re-opened (simulates
+    /// reconnection). Also clears the backing device's write-seen gate so the next
+    /// handshake re-enforces request-before-response ordering on the fresh handles.
     void ResetOpened(const string &path)
     {
         for(auto &d : m_aDevices)
-            if(d.sPath == path) { d.iOpenCount = 0; break; }
+            if(d.sPath == path) { d.iOpenCount = 0; d.pDevice->ResetWriteSeen(); break; }
     }
 
 private:
@@ -229,6 +258,7 @@ private:
     public:
         explicit DeviceWrapper(FakeDevice *p) : m_p(p) {}
         int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+        int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override { return m_p->ReadTimeout(buf, len, iTimeoutMs); }
         int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
         void Close() override {}
     private:

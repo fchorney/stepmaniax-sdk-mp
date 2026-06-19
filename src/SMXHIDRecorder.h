@@ -40,6 +40,7 @@ public:
     ~RecordingHIDDevice() override;
 
     int Read(uint8_t *buf, size_t len) override;
+    int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override;
     int Write(const uint8_t *buf, size_t len) override;
     void Close() override;
 
@@ -83,6 +84,7 @@ public:
     explicit ReplayHIDDevice(const std::string &sInputPath);
 
     int Read(uint8_t *buf, size_t len) override;
+    int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override;
     int Write(const uint8_t *buf, size_t len) override;
     void Close() override;
 

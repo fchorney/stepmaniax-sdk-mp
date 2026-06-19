@@ -81,9 +81,8 @@ int main(int argc, char *argv[])
     if(argc >= 2 && argv[1][0] != '-')
     {
         int mainMs = atoi(argv[1]);
-        int usbUs = argc >= 3 && argv[2][0] != '-' ? atoi(argv[2]) : 1000;
-        SMX_SetPollingRate(mainMs, usbUs);
-        printf("Polling rate: main thread %dms, USB thread %dus\n", mainMs, usbUs);
+        SMX_SetMainThreadSleepMs(mainMs);
+        printf("Main thread sleep: %dms (input reads are interrupt-driven)\n", mainMs);
     }
 
     if(bAllPackets)

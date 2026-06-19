@@ -41,8 +41,10 @@ public:
     /// Sets the recursive mutex used for synchronizing access to this device's state.
     void SetLock(std::recursive_mutex *pLock) { m_pLock = pLock; }
 
-    /// Sets the slot index (0 or 1) for this device, used in callbacks.
-    void SetPadIndex(int i) { m_iPadIndex = i; }
+    /// Sets the slot index (0 or 1) for this device, used in callbacks. Also
+    /// updates the connection's shared pad index so the running poll thread
+    /// attributes input to the new slot after a pad swap (no callback rebinding).
+    void SetPadIndex(int i) { m_iPadIndex = i; m_Connection.SetSharedPadIndex(i); }
 
     /// Sets the callback function to be invoked when this device's state changes.
     void SetUpdateCallback(std::function<void(int, SMXUpdateCallbackReason)> cb) { m_pUpdateCallback = std::move(cb); }
@@ -54,11 +56,23 @@ public:
 
     bool IsConnected() const;
 
-    bool OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice) { return m_Connection.Open(sPath, std::move(pReadDevice), std::move(pWriteDevice)); }
+    /// Opens the device and returns the read-side poll handle for the manager to
+    /// run on a per-pad poll thread. The input-changed callback is installed once
+    /// here (never rebound): it forwards to the slot-independent update callback,
+    /// tagging each report with the pad index the poll thread reads from the
+    /// connection's shared atomic, which SetPadIndex updates on a swap.
+    std::unique_ptr<SMXPollHandle> OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice)
+    {
+        auto cb = m_pUpdateCallback;
+        return m_Connection.Open(sPath, std::move(pReadDevice), std::move(pWriteDevice),
+            [cb](int pad) {
+                if(cb)
+                    cb(pad, static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_InputState));
+            },
+            m_iPadIndex);
+    }
 
-    void SetConnectionCallbacks();
     void CloseDevice();
-    bool PollUSBData();
 
     /// Queues a command to be sent to this device asynchronously.
     void SendCommand(const std::string &cmd, const std::function<void(std::string)>& pComplete = nullptr);

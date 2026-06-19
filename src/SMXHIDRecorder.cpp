@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <thread>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -56,6 +57,14 @@ RecordingHIDDevice::~RecordingHIDDevice()
 int RecordingHIDDevice::Read(uint8_t *buf, size_t len)
 {
     int iResult = m_pDevice->Read(buf, len);
+    if(iResult > 0)
+        WriteRecord('R', buf, static_cast<size_t>(iResult));
+    return iResult;
+}
+
+int RecordingHIDDevice::ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs)
+{
+    int iResult = m_pDevice->ReadTimeout(buf, len, iTimeoutMs);
     if(iResult > 0)
         WriteRecord('R', buf, static_cast<size_t>(iResult));
     return iResult;
@@ -150,6 +159,24 @@ ReplayHIDDevice::ReplayHIDDevice(const string &sInputPath)
             m_aReadBatches.emplace_back();  // start new batch
         }
     }
+}
+
+// Replay is deterministic and driven by the write count, not real USB timing, so
+// a timeout has no exact meaning. But the per-pad poll thread calls this in a
+// tight loop, and returning 0 immediately while waiting for the next write (which
+// releases the next read batch) busy-spins a core. With two replay devices on a
+// constrained CI runner that can starve the main thread and stall the
+// write->read->write handshake. So when no data is available yet, park briefly
+// (capped at 1ms) like a real blocking read, giving the main thread room to write.
+int ReplayHIDDevice::ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs)
+{
+    int n = Read(buf, len);
+    if(n != 0)
+        return n;
+    int iSleepMs = iTimeoutMs < 0 ? 1 : std::min(iTimeoutMs, 1);
+    if(iSleepMs > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(iSleepMs));
+    return 0;
 }
 
 int ReplayHIDDevice::Read(uint8_t *buf, size_t len)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(smx-sdk-mp VERSION 1.4.0 LANGUAGES CXX)
+project(smx-sdk-mp VERSION 2.0.0 LANGUAGES CXX)
 
 # Generate version header from project version
 configure_file(src/SMXVersion.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/SMXVersion.h)

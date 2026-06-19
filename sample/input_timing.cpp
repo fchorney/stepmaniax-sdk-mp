@@ -1,26 +1,22 @@
-// USB input timing probe.
+// SMX input resolution probe.
 //
-// Tracks genuine input state changes and histograms inter-change intervals.
-// Gaps below BURST_THRESHOLD_US are OS drain artifacts (two USB reports
-// buffered and read back-to-back, appearing microseconds apart instead of
-// ~1ms apart). These are counted separately and excluded from the histogram.
+// Confirms the interrupt-driven read path resolves input at the USB frame floor
+// (~1ms), now that each pad's poll thread blocks on the device and wakes the
+// instant a report arrives. Runs in change-only mode, so the callback fires on
+// real panel-state transitions: the ~10Hz idle heartbeat and same-state repeats
+// are dropped, and every recorded event is a genuine input change.
 //
-// Full Speed USB delivers one HID report per 1ms frame -- that is the hard
-// precision floor for step timing regardless of firmware sampling rate. The
-// histogram shows where genuine inter-change intervals land relative to that
-// floor.
+// A human can't generate 1000 changes/sec, so this is not about report volume.
+// It is about resolution: when two genuine changes land a frame apart (a jump
+// hitting two panels, a fast roll, sensor flicker), do they arrive ~1ms apart
+// rather than coalesced or delayed to the next heartbeat? The Min gap and the
+// sub-2ms histogram buckets are the answer. Full Speed USB delivers one report
+// per 1ms frame, so ~1ms is the floor regardless of firmware sampling rate.
 //
 // Build: cmake -B build -DBUILD_SAMPLE=ON && cmake --build build --target smx-input-timing
-// Run:   ./build/smx-input-timing [poll_sleep_us]
-//
-// poll_sleep_us: USB poll thread sleep in microseconds (default: 500)
-//   Lower = less latency between USB report arrival and detection.
-//   2000Hz (500us) is a good default: polls twice per USB frame for
-//   max 1.5ms total latency with minimal CPU overhead.
-//   Diminishing returns past 4000Hz (250us) since USB jitter dominates.
-//
-// Press Ctrl+C to stop and print the session summary.
+// Run:   ./build/smx-input-timing      (step on the pad, then Ctrl+C for the summary)
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -36,21 +32,25 @@
 
 using namespace std::chrono;
 
+// 100us buckets covering 0..20ms.
 static const size_t NUM_BUCKETS = 200;
 static const uint64_t BUCKET_US = 100;
-static const uint64_t BURST_THRESHOLD_US = 1100;
 
 struct PadStats {
-    uint64_t changes = 0;
+    uint64_t reports = 0;              // genuine input changes (change-only mode)
     steady_clock::time_point last_ts;
     bool has_last = false;
+    // Inter-arrival interval distribution.
     std::array<uint64_t, NUM_BUCKETS> buckets{};
     uint64_t overflow = 0;
     uint64_t min_us = UINT64_MAX;
     uint64_t max_us = 0;
     uint64_t sum_us = 0;
     uint64_t interval_count = 0;
-    uint64_t burst_count = 0;
+    // Rolling rate window.
+    steady_clock::time_point window_start;
+    uint64_t window_reports = 0;
+    double rate_hz = 0.0;
 };
 
 static std::atomic<bool> g_running{true};
@@ -68,6 +68,7 @@ static void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, 
         std::lock_guard<std::mutex> lock(g_mutex);
         g_connected[pad] = true;
         g_stats[pad] = PadStats{};
+        g_stats[pad].window_start = steady_clock::now();
         SMXInfo info;
         SMX_GetInfo(pad, &info);
         printf("Pad %d connected (P%d, fw %d)\n",
@@ -84,29 +85,35 @@ static void OnStateChanged(const int pad, const SMXUpdateCallbackReason reason, 
         const auto now = steady_clock::now();
         std::lock_guard<std::mutex> lock(g_mutex);
         PadStats &s = g_stats[pad];
-        s.changes++;
+        s.reports++;
+        s.window_reports++;
         if(s.has_last)
         {
+            // Record every inter-change interval, including sub-millisecond ones:
+            // those are the resolution signal (two genuine changes a frame apart),
+            // not noise to filter out.
             const uint64_t us = (uint64_t)duration_cast<microseconds>(now - s.last_ts).count();
-            if(us < BURST_THRESHOLD_US)
-            {
-                s.burst_count++;
-            }
+            const size_t idx = (size_t)(us / BUCKET_US);
+            if(idx < NUM_BUCKETS)
+                s.buckets[idx]++;
             else
-            {
-                const size_t idx = (size_t)(us / BUCKET_US);
-                if(idx < NUM_BUCKETS)
-                    s.buckets[idx]++;
-                else
-                    s.overflow++;
-                if(us < s.min_us) s.min_us = us;
-                if(us > s.max_us) s.max_us = us;
-                s.sum_us += us;
-                s.interval_count++;
-            }
+                s.overflow++;
+            if(us < s.min_us) s.min_us = us;
+            if(us > s.max_us) s.max_us = us;
+            s.sum_us += us;
+            s.interval_count++;
         }
         s.last_ts = now;
         s.has_last = true;
+
+        // Refresh the rolling rate roughly twice a second.
+        const double elapsed = duration<double>(now - s.window_start).count();
+        if(elapsed >= 0.5)
+        {
+            s.rate_hz = (double)s.window_reports / elapsed;
+            s.window_start = now;
+            s.window_reports = 0;
+        }
     }
 }
 
@@ -116,34 +123,32 @@ static void PrintResults()
     for(int pad = 0; pad < 2; pad++)
     {
         const PadStats &s = g_stats[pad];
-        if(s.changes == 0)
+        if(s.reports == 0)
             continue;
 
-        printf("Pad %d:  (%" PRIu64 " state changes, %" PRIu64 " genuine intervals,"
-               " %" PRIu64 " drain artifacts filtered)\n",
-               pad, s.changes, s.interval_count, s.burst_count);
+        printf("Pad %d:  %.0f changes/sec (%" PRIu64 " changes total)\n", pad, s.rate_hz, s.reports);
 
         if(s.min_us < UINT64_MAX)
-            printf("  Min gap  : %6" PRIu64 " us\n", s.min_us);
+            printf("  Min gap  : %6" PRIu64 " us  (%.0f Hz peak resolution)\n",
+                   s.min_us, 1000000.0 / (double)std::max<uint64_t>(s.min_us, 1));
         if(s.interval_count > 0)
-            printf("  Mean gap : %6.0f us\n", (double)s.sum_us / (double)s.interval_count);
+        {
+            const double mean = (double)s.sum_us / (double)s.interval_count;
+            printf("  Mean gap : %6.0f us  (%.0f Hz)\n", mean, 1000000.0 / mean);
+        }
         if(s.max_us > 0)
             printf("  Max gap  : %6" PRIu64 " us\n", s.max_us);
 
         int last_bucket = -1;
         for(int i = (int)NUM_BUCKETS - 1; i >= 0; i--)
         {
-            if(s.buckets[i] > 0)
-            {
-                last_bucket = i;
-                break;
-            }
+            if(s.buckets[i] > 0) { last_bucket = i; break; }
         }
 
         if(last_bucket >= 0)
         {
-            printf("\n  Histogram (%" PRIu64 "us buckets):\n", BUCKET_US);
-            int show = last_bucket + 3;
+            printf("\n  Inter-arrival histogram (%" PRIu64 "us buckets):\n", BUCKET_US);
+            int show = last_bucket + 2;
             if(show > (int)NUM_BUCKETS) show = (int)NUM_BUCKETS;
             for(int i = 0; i < show; i++)
             {
@@ -164,19 +169,20 @@ static void PrintResults()
 
 int main(int argc, char **argv)
 {
-    const int poll_us = argc > 1 ? atoi(argv[1]) : 500;
+    (void)argc; (void)argv;
 
     signal(SIGINT,  [](int){ g_running = false; });
     signal(SIGTERM, [](int){ g_running = false; });
 
-    printf("SMX Input Timing Probe\n");
-    printf("USB poll sleep: %d us (%d Hz)\n", poll_us, 1000000 / poll_us);
-    printf("Precision floor: ~1ms (Full Speed USB frame)."
-           " Gaps < %" PRIu64 "us are drain artifacts.\n\n",
-           BURST_THRESHOLD_US);
+    printf("SMX Input Resolution Probe\n");
+    printf("Change-only mode. A Min gap near ~1ms confirms input resolves at the USB frame floor.\n\n");
 
     SMX_Start(OnStateChanged, nullptr);
-    SMX_SetPollingRate(50, poll_us);
+    SMX_SetMainThreadSleepMs(50);
+    // Change-only mode (the default, set explicitly for clarity): only real
+    // panel-state transitions are recorded, so the ~10Hz idle heartbeat and
+    // same-state repeats don't pollute the histogram.
+    SMX_SetInputStateMode(false);
 
     printf("Waiting for a pad");
     fflush(stdout);
@@ -201,7 +207,8 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    printf("Step rapidly on any panel. Press Ctrl+C to stop.\n");
+    printf("Step on the pad (lead with jumps and fast rolls to generate close changes)."
+           " Press Ctrl+C to stop.\n");
     while(g_running)
         std::this_thread::sleep_for(milliseconds(100));
     printf("\n\n");
