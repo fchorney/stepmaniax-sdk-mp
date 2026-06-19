@@ -337,14 +337,14 @@ Building with `-DBUILD_SAMPLE=ON` also produces `smx-sensor-rate`, a diagnostic 
 
 Lights and sensor-test polling share one per-pad command pipeline. The SDK schedules them fairly: light frames are coalesced and bounded to one un-sent frame at a time (last-writer-wins, so stale frames never back up), the sensor request is paced to ~30Hz and inserted ahead of a pending light frame for low latency, and the main loop wakes exactly when the next request is due. This keeps both ~30Hz sensor sampling and ~30Hz lights without either starving the other; under a tight pipeline the light frame rate degrades gracefully rather than backlogging. The probe streams a moving pattern so light lag is visible and reports per-pad sample rates, to confirm on real hardware.
 
-Building with `-DBUILD_SAMPLE=ON` also produces `smx-input-timing`, a probe that measures the USB input timing precision by histogramming inter-state-change intervals:
+Building with `-DBUILD_SAMPLE=ON` also produces `smx-input-timing`, a resolution probe that confirms input changes resolve at the USB frame floor:
 
 ```bash
-./smx-input-timing [poll_sleep_us]
-# default: 500us (2000Hz); press Ctrl+C to stop and print the session summary
+./smx-input-timing
+# step on the pad (lead with jumps and fast rolls); press Ctrl+C for the summary
 ```
 
-Full Speed USB delivers one HID report per 1ms frame -- the hard precision floor for step timing regardless of firmware sampling rate. The histogram shows genuine inter-change intervals above that floor; OS drain artifacts (two buffered reports read back-to-back, appearing sub-1ms apart) are counted separately. Polling at 2000Hz (500us) is the sweet spot: catches each report within half a USB frame for max 1.5ms total latency; diminishing returns past 4000Hz (250us).
+It runs in change-only mode, so only real panel-state transitions are recorded (the ~10Hz idle heartbeat and same-state repeats are dropped), and histograms the inter-change intervals in 100us buckets. Input reads are interrupt-driven (each pad's poll thread blocks on the device and wakes the instant a report arrives), so there is no poll rate to tune. Full Speed USB delivers one HID report per 1ms frame, the hard precision floor for step timing regardless of firmware sampling rate. The point is not report volume (a human can't generate 1000 changes/sec) but resolution: when two genuine changes land a frame apart, the Min gap and the sub-2ms histogram buckets show they arrive ~1ms apart rather than coalesced or delayed to the next heartbeat.
 
 ## API Overview
 
