@@ -46,27 +46,26 @@ SMXManager::SMXManager(const function<void(int, SMXUpdateCallbackReason)>& callb
     for(int i = 0; i < 2; i++)
     {
         m_Devices[i].SetLock(&m_Lock);
-        m_Devices[i].SetPadIndex(i);
         m_Devices[i].SetUpdateCallback(callback);
-        m_Devices[i].SetConnectionCallbacks();
+        m_Devices[i].SetPadIndex(i);
     }
+    // Per-pad poll threads are spawned on connect (see AttemptConnections), not
+    // here, since each owns a connection's read handle.
     m_Thread = thread([this] { ThreadMain(); });
-    m_USBPollingThread = thread([this] { USBPollingThreadMain(); });
 }
 
 SMXManager::~SMXManager()
 {
-    // Detect if SMX_Stop() is being called from within a callback (which would deadlock).
+    // Detect if SMX_Stop() is being called from within a callback (which would
+    // deadlock when we join that thread below). Callbacks fire from the main
+    // thread and from the per-pad poll threads (input state).
     auto thisId = this_thread::get_id();
     const thread::id mainId = m_MainThreadId.load();
-    const thread::id usbId = m_USBPollingThreadId.load();
-    if(thisId == mainId || thisId == usbId)
+    const bool bFromPoll = thisId == m_PollThreadIds[0].load() || thisId == m_PollThreadIds[1].load();
+    if(thisId == mainId || bFromPoll)
     {
-        Log(ssprintf("SMX_Stop() called from within an SDK callback — this will deadlock. Aborting. "
-                     "(caller=%s, main=%s, usb=%s)",
-                     thisId == mainId ? "MainThread" : "USBThread",
-                     mainId == thread::id() ? "unset" : "set",
-                     usbId == thread::id() ? "unset" : "set"));
+        Log(ssprintf("SMX_Stop() called from within an SDK callback - this will deadlock. Aborting. "
+                     "(caller=%s)", thisId == mainId ? "MainThread" : "PollThread"));
         abort();
     }
 
@@ -74,8 +73,10 @@ SMXManager::~SMXManager()
     m_Cond.notify_all();
     if(m_Thread.joinable())
         m_Thread.join();
-    if(m_USBPollingThread.joinable())
-        m_USBPollingThread.join();
+    // The main thread is now joined, so nothing else touches m_PollThreads; stop
+    // and join the per-pad poll threads (each returns within one read timeout).
+    for(int i = 0; i < 2; i++)
+        StopAndJoinPollThread(i);
     m_pEnumerator->Exit();
 }
 
@@ -102,10 +103,9 @@ void SMXManager::SetSerialNumbers()
     }
 }
 
-void SMXManager::SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
+void SMXManager::SetMainThreadSleepMs(int iMainThreadMs)
 {
     m_iMainThreadSleepMs.store(iMainThreadMs);
-    m_iUSBPollingSleepUs.store(iUSBPollingUs);
 }
 
 void SMXManager::ReenableAutoLights()
@@ -350,31 +350,48 @@ void SMXManager::SetInputStateMode(bool bAlwaysFire)
 
 // --- Private thread methods ---
 
-void SMXManager::USBPollingThreadMain()
+namespace {
+// Max time a parked poll thread blocks in one read before noticing a stop or
+// shutdown request. Does NOT affect input latency (a report wakes the blocking
+// read immediately); it only bounds how quickly a thread notices a reap/shutdown.
+constexpr int POLL_READ_TIMEOUT_MS = 10;
+}
+
+void SMXManager::PadPollLoop(SMXPollHandle *pPoll, const shared_ptr<atomic<bool>> &pStop)
 {
-    m_USBPollingThreadId.store(this_thread::get_id());
-    while(!m_bShutdown)
+    while(!pStop->load(memory_order_relaxed) && !m_bShutdown.load())
     {
-        bool bHasReport6Data = false;
-
-        {
-            // Only the poll lock here, never m_Lock, so a blocking USB write the
-            // main thread is performing under m_Lock can't stall input reads. The
-            // main thread takes m_PollLock only briefly when it opens/closes/swaps
-            // a connection, so the read handles this touches stay valid.
-            lock_guard<mutex> lock(m_PollLock);
-            for(int i = 0; i < 2; i++)
-            {
-                if(m_Devices[i].PollUSBData() || m_Devices[i].GetConnection()->HasReadError())
-                    bHasReport6Data = true;
-            }
-        }
-
-        if(bHasReport6Data)
+        const bool bReport6 = pPoll->PollUSBData(POLL_READ_TIMEOUT_MS);
+        // Input changes already fired via the inline callback; wake the main
+        // thread only to process buffered Report 6 data or a read error promptly.
+        if(bReport6 || pPoll->HasReadError())
             m_Cond.notify_all();
-
-        this_thread::sleep_for(chrono::microseconds(m_iUSBPollingSleepUs.load(memory_order_relaxed)));
+        if(pPoll->HasReadError())
+            break;
     }
+}
+
+void SMXManager::SpawnPollThread(int slot, unique_ptr<SMXPollHandle> pPoll)
+{
+    auto pStop = make_shared<atomic<bool>>(false);
+    m_PollThreads[slot].m_pStop = pStop;
+    m_PollThreads[slot].m_Thread = thread(
+        [this, pPoll = std::move(pPoll), pStop]() mutable {
+            PadPollLoop(pPoll.get(), pStop);
+        });
+    // Record the id synchronously (on this main thread) for the destructor's
+    // deadlock check; the thread object's id is valid as soon as it is created.
+    m_PollThreadIds[slot].store(m_PollThreads[slot].m_Thread.get_id());
+}
+
+void SMXManager::StopAndJoinPollThread(int slot)
+{
+    if(m_PollThreads[slot].m_pStop)
+        m_PollThreads[slot].m_pStop->store(true, memory_order_relaxed);
+    if(m_PollThreads[slot].m_Thread.joinable())
+        m_PollThreads[slot].m_Thread.join();
+    m_PollThreads[slot] = PollThread();
+    m_PollThreadIds[slot].store(thread::id());
 }
 
 void SMXManager::ThreadMain()
@@ -394,9 +411,11 @@ void SMXManager::ThreadMain()
             if(!sError.empty())
             {
                 Log(ssprintf("Device %i error: %s", i, sError.c_str()));
-                // Closing resets the connection's read handle, which the USB
-                // polling thread reads, so exclude it (we already hold m_Lock).
-                lock_guard<mutex> pollLock(m_PollLock);
+                // Reap this pad's poll thread before closing: it owns the read
+                // handle and either set this error or will stop within one read
+                // timeout, so the join returns promptly and no read is in flight
+                // when the connection drops its shared state.
+                StopAndJoinPollThread(i);
                 m_Devices[i].CloseDevice();
             }
         }
@@ -546,12 +565,12 @@ void SMXManager::AttemptConnections()
             Log("Error opening device (write), will retry: " + dev.sPath);
             continue;
         }
-        {
-            // Setting the connection's read handle races the USB polling thread,
-            // so hold m_PollLock (we already hold m_Lock here) while opening.
-            lock_guard<mutex> pollLock(m_PollLock);
-            pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice));
-        }
+        // OpenDevice hands back the read-side poll handle; run it on this slot's
+        // own poll thread. The slot was empty (its prior thread, if any, was
+        // reaped on close), so there is nothing to stop first.
+        const int slot = static_cast<int>(pSlot - &m_Devices[0]);
+        if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice)))
+            SpawnPollThread(slot, std::move(pPoll));
     }
 }
 
@@ -647,17 +666,20 @@ bool SMXManager::CorrectDeviceOrder()
 
     if(bSwap)
     {
-        // The swap moves both connections (read handles included) and re-binds
-        // callbacks, all of which the USB polling thread reads, so exclude it
-        // (we already hold m_Lock; lock order m_Lock -> m_PollLock).
-        lock_guard<mutex> pollLock(m_PollLock);
+        // Each poll thread owns its read handle and shared state, so it keeps
+        // reading its own physical device across the swap. We move the device
+        // objects and the poll-thread bookkeeping together so slot indices stay
+        // aligned. SetPadIndex updates each connection's shared pad index, so the
+        // running poll threads attribute input to the new slots with no callback
+        // rebinding.
         SMXDevice temp(std::move(m_Devices[0]));
         m_Devices[0] = std::move(m_Devices[1]);
         m_Devices[1] = std::move(temp);
+        std::swap(m_PollThreads[0], m_PollThreads[1]);
+        const std::thread::id id0 = m_PollThreadIds[0].load();
+        m_PollThreadIds[0].store(m_PollThreadIds[1].load());
+        m_PollThreadIds[1].store(id0);
 
-        // Re-bind callbacks and pad indices after swap.
-        m_Devices[0].SetConnectionCallbacks();
-        m_Devices[1].SetConnectionCallbacks();
         m_Devices[0].SetPadIndex(0);
         m_Devices[1].SetPadIndex(1);
     }

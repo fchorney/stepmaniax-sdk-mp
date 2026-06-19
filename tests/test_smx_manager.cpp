@@ -540,11 +540,16 @@ TEST_CASE("Device reconnects successfully after read error disconnect") {
     pEnum->ResetOpened("/dev/hidraw0");
     pFakeDevice->QueueRead(MakeDeviceInfoResponse('0', 5));
 
-    // Wait for reconnection
+    // Wait for reconnection. It inherently takes over a second (the
+    // ENUMERATION_INTERVAL_SECONDS rate-limit gates re-enumeration of the freed
+    // slot) plus a device-info handshake, so give generous headroom beyond the
+    // default 2s budget: under ThreadSanitizer's heavy slowdown, with the rest of
+    // the suite contending, the wall-clock deadline is otherwise occasionally
+    // squeezed even though the reconnection itself completes fine.
     bool bReconnected = WaitFor([&]() {
         SMX_GetInfo(0, &info);
         return info.m_bConnected;
-    });
+    }, 8000);
 
     CHECK(bReconnected);
     CHECK(iConnectedCount >= 2);
@@ -954,6 +959,7 @@ private:
     public:
         explicit Wrapper(FakeDevice *p) : m_p(p) {}
         int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+        int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override { return m_p->ReadTimeout(buf, len, iTimeoutMs); }
         int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
         void Close() override {}
     private:

@@ -79,6 +79,7 @@ private:
     public:
         explicit ReplayView(shared_ptr<ReplayHIDDevice> p) : m_p(std::move(p)) {}
         int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+        int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override { return m_p->ReadTimeout(buf, len, iTimeoutMs); }
         int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
         void Close() override {}
     private:

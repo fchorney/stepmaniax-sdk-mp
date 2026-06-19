@@ -41,19 +41,14 @@ SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
 /// Move constructor transfers the HID connection and all pending I/O state from another instance.
 /// The source object is left in a disconnected state (m_pDevice set to nullptr).
 SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
-    m_pReadDevice(std::move(other.m_pReadDevice)),
+    m_pShared(std::move(other.m_pShared)),
     m_pWriteDevice(std::move(other.m_pWriteDevice)),
     m_sPath(std::move(other.m_sPath)),
     m_bActive(other.m_bActive),
     m_bGotInfo(other.m_bGotInfo),
     m_sReadBuffers(std::move(other.m_sReadBuffers)),
     m_sCurrentReadBuffer(std::move(other.m_sCurrentReadBuffer)),
-    m_iInputState(other.m_iInputState.load()),
-    m_bAlwaysFireInputCallback(other.m_bAlwaysFireInputCallback.load()),
-    m_bHadReadError(other.m_bHadReadError.load()),
-    m_sReport6Buffer(std::move(other.m_sReport6Buffer)),
     m_DeviceInfo(other.m_DeviceInfo),
-    m_pInputStateChangedCallback(std::move(other.m_pInputStateChangedCallback)),
     m_aPendingCommands(std::move(other.m_aPendingCommands)),
     m_pCurrentCommand(std::move(other.m_pCurrentCommand))
 {
@@ -66,21 +61,16 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
     if(this != &other)
     {
         Close();
-        m_pReadDevice = std::move(other.m_pReadDevice);
+        m_pShared = std::move(other.m_pShared);
         m_pWriteDevice = std::move(other.m_pWriteDevice);
         m_sPath = std::move(other.m_sPath);
         m_bActive = other.m_bActive;
         m_bGotInfo = other.m_bGotInfo;
         m_sReadBuffers = std::move(other.m_sReadBuffers);
         m_sCurrentReadBuffer = std::move(other.m_sCurrentReadBuffer);
-        m_iInputState.store(other.m_iInputState.load());
-        m_bAlwaysFireInputCallback.store(other.m_bAlwaysFireInputCallback.load());
-        m_bHadReadError.store(other.m_bHadReadError.load());
-        m_sReport6Buffer = std::move(other.m_sReport6Buffer);
         m_DeviceInfo = other.m_DeviceInfo;
         m_aPendingCommands = std::move(other.m_aPendingCommands);
         m_pCurrentCommand = std::move(other.m_pCurrentCommand);
-        m_pInputStateChangedCallback = std::move(other.m_pInputStateChangedCallback);
     }
     return *this;
 }
@@ -88,9 +78,16 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
 /// Opens a connection to the SMX device using the provided HID device handle.
 /// Automatically requests device information.
 /// The device is considered fully connected once device info is received (see IsConnectedWithDeviceInfo).
-bool SMXDeviceConnection::Open(const string &sPath, unique_ptr<IHIDDevice> pReadDevice, unique_ptr<IHIDDevice> pWriteDevice)
+unique_ptr<SMXPollHandle> SMXDeviceConnection::Open(const string &sPath,
+    unique_ptr<IHIDDevice> pReadDevice, unique_ptr<IHIDDevice> pWriteDevice,
+    function<void(int)> inputChangedCb, int iPadIndex)
 {
-    m_pReadDevice = std::move(pReadDevice);
+    // Fresh cross-thread state for this connection. The poll handle below shares
+    // it; both go away when the connection closes and the poll thread is reaped.
+    m_pShared = std::make_shared<SMXConnectionShared>();
+    m_pShared->m_iPadIndex.store(iPadIndex, std::memory_order_relaxed);
+    m_pShared->m_pInputStateChangedCallback = std::move(inputChangedCb);
+
     m_pWriteDevice = std::move(pWriteDevice);
     m_sPath = sPath;
 
@@ -98,14 +95,14 @@ bool SMXDeviceConnection::Open(const string &sPath, unique_ptr<IHIDDevice> pRead
     // sets m_bGotInfo directly, so no callback capture of 'this' is needed.
     RequestDeviceInfo(nullptr);
 
-    return true;
+    return make_unique<SMXPollHandle>(std::move(pReadDevice), m_pShared);
 }
 
 /// Closes the HID connection and cleans up all pending I/O state.
 /// Invokes any pending command completion callbacks with empty strings to indicate cancellation.
 void SMXDeviceConnection::Close()
 {
-    if(!m_pWriteDevice && !m_pReadDevice)
+    if(!m_pWriteDevice && !m_pShared)
         return;
 
     Log("Closing device");
@@ -119,25 +116,22 @@ void SMXDeviceConnection::Close()
             cmd->m_pComplete("");
     }
 
-    if(m_pReadDevice)
-        m_pReadDevice->Close();
-    m_pReadDevice.reset();
     if(m_pWriteDevice)
         m_pWriteDevice->Close();
     m_pWriteDevice.reset();
+    // The read handle lives in the poll handle on the per-pad poll thread, which
+    // the manager stops and joins before closing the device. Dropping our
+    // shared_ptr (the poll handle's is already gone) releases the shared state,
+    // input bitmask, read-error flag, and Report 6 buffer; a later Open() makes a
+    // fresh one, so no stale state carries across a reconnect.
+    m_pShared.reset();
     m_sPath.clear();
     m_sReadBuffers.clear();
     m_sCurrentReadBuffer.clear();
-    {
-        lock_guard<mutex> lock(m_Report6BufferMutex);
-        m_sReport6Buffer.clear();
-    }
     m_aPendingCommands.clear();
     m_pCurrentCommand = nullptr;
     m_bActive = false;
     m_bGotInfo = false;
-    m_iInputState.store(0);
-    m_bHadReadError.store(false, std::memory_order_relaxed);
 }
 
 /// Processes I/O operations. Called once per frame from the I/O thread.
@@ -150,9 +144,9 @@ void SMXDeviceConnection::Update(string &sError)
         return;
     }
 
-    // If the USB polling thread encountered a read error, propagate it here
-    // so the main thread can close the device.
-    if(m_bHadReadError.load(std::memory_order_relaxed))
+    // If the poll thread encountered a read error, propagate it here so the main
+    // thread can close the device.
+    if(m_pShared && m_pShared->m_bHadReadError.load(std::memory_order_relaxed))
     {
         sError = "Error reading from device";
         return;
@@ -192,13 +186,13 @@ void SMXDeviceConnection::CheckReads()
         }
     }
 
-    // Consume Report 6 packets from m_sReport6Buffer (populated by USB polling thread).
-    // Swap the buffer out under the lock so the USB polling thread isn't blocked
+    // Consume Report 6 packets from the shared buffer (populated by the poll
+    // thread). Swap the buffer out under the lock so the poll thread isn't blocked
     // during packet processing.
     string localBuffer;
     {
-        lock_guard<mutex> lock(m_Report6BufferMutex);
-        localBuffer.swap(m_sReport6Buffer);
+        lock_guard<mutex> lock(m_pShared->m_Report6BufferMutex);
+        localBuffer.swap(m_pShared->m_sReport6Buffer);
     }
 
     // Process fragmented packets and queue complete ones for reading.
@@ -217,8 +211,8 @@ void SMXDeviceConnection::CheckReads()
     // put it back for next time.
     if(processedBytes < localBuffer.size())
     {
-        lock_guard<mutex> lock(m_Report6BufferMutex);
-        m_sReport6Buffer.insert(0, localBuffer.data() + processedBytes, localBuffer.size() - processedBytes);
+        lock_guard<mutex> lock(m_pShared->m_Report6BufferMutex);
+        m_pShared->m_sReport6Buffer.insert(0, localBuffer.data() + processedBytes, localBuffer.size() - processedBytes);
     }
 }
 
@@ -419,38 +413,50 @@ bool SMXDeviceConnection::HasUnsentLights() const
     return false;
 }
 
-/// Polls for USB data, called by the USB polling thread.
+/// Polls for USB data on the per-pad poll thread (read side).
 ///
-/// Handles Report 3 (input state) packets completely and inline,
-/// updating m_iInputState atomically. Report 6 (command/config) packets are
-/// extracted and buffered in m_sReport6Buffer for the main I/O thread to process.
+/// The first read blocks up to iFirstReadTimeoutMs (interrupt-driven: the kernel
+/// wakes us the instant the device delivers a report), then the rest of the OS
+/// read buffer is drained non-blocking. Report 3 (input state) is parsed inline,
+/// updating the shared bitmask atomically and firing the input callback with the
+/// current pad index. Report 6 (command/config) is buffered in the shared buffer
+/// for the main I/O thread to process.
 ///
-/// @param sError [out] Error message if a read fails.
 /// @return True if Report 6 data was buffered.
-bool SMXDeviceConnection::PollUSBData()
+bool SMXPollHandle::PollUSBData(int iFirstReadTimeoutMs)
 {
     if(!m_pReadDevice)
         return false;
 
     // If we already had a read error, skip polling until the main thread handles it.
-    if(m_bHadReadError.load(std::memory_order_relaxed))
+    if(m_pShared->m_bHadReadError.load(std::memory_order_relaxed))
         return false;
 
-    // Read and parse HID packets directly from the device.
-    // The common case is a single 3-byte Report 3 (input state) packet per call.
-    // By parsing inline we avoid intermediate buffer allocations entirely for Report 3.
-    // Report 6 packets are accumulated in a stack buffer to avoid heap allocation
+    // Parse HID packets directly. The common case is a single 3-byte Report 3
+    // (input state) packet per call; parsing inline avoids buffer allocations for
+    // it. Report 6 packets accumulate in a stack buffer to avoid heap allocation
     // in the common case (config responses are typically < 512 bytes).
     char report6Buf[512];
     size_t report6Len = 0;
     uint8_t rawbuf[HID_PACKET_SIZE];
+    bool bFirst = true;
 
     while(true)
     {
-        const int res = m_pReadDevice->Read(rawbuf, HID_PACKET_SIZE);
+        // Block only on the first read; drain the rest non-blocking.
+        int res;
+        if(bFirst)
+        {
+            bFirst = false;
+            res = m_pReadDevice->ReadTimeout(rawbuf, HID_PACKET_SIZE, iFirstReadTimeoutMs);
+        }
+        else
+        {
+            res = m_pReadDevice->Read(rawbuf, HID_PACKET_SIZE);
+        }
         if(res < 0)
         {
-            m_bHadReadError.store(true, std::memory_order_relaxed);
+            m_pShared->m_bHadReadError.store(true, std::memory_order_relaxed);
             return false;
         }
         if(res == 0)
@@ -468,11 +474,12 @@ bool SMXDeviceConnection::PollUSBData()
                 continue;
 
             const uint16_t newState = (rawbuf[2] << 8) | rawbuf[1];
-            const bool bChanged = m_iInputState.load(std::memory_order_relaxed) != newState;
+            const bool bChanged = m_pShared->m_iInputState.load(std::memory_order_relaxed) != newState;
             if(bChanged)
-                m_iInputState.store(newState, std::memory_order_relaxed);
-            if((bChanged || m_bAlwaysFireInputCallback.load(std::memory_order_relaxed)) && m_pInputStateChangedCallback)
-                m_pInputStateChangedCallback();
+                m_pShared->m_iInputState.store(newState, std::memory_order_relaxed);
+            if((bChanged || m_pShared->m_bAlwaysFireInputCallback.load(std::memory_order_relaxed))
+               && m_pShared->m_pInputStateChangedCallback)
+                m_pShared->m_pInputStateChangedCallback(m_pShared->m_iPadIndex.load(std::memory_order_relaxed));
         }
         else if(iReportId == HID_REPORT_DATA)
         {
@@ -494,8 +501,8 @@ bool SMXDeviceConnection::PollUSBData()
 
     if(report6Len > 0)
     {
-        lock_guard<mutex> lock(m_Report6BufferMutex);
-        m_sReport6Buffer.append(report6Buf, report6Len);
+        lock_guard<mutex> lock(m_pShared->m_Report6BufferMutex);
+        m_pShared->m_sReport6Buffer.append(report6Buf, report6Len);
         return true;
     }
     return false;

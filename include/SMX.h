@@ -449,16 +449,19 @@ SMX_API void SMX_SetTestMode(int pad, SensorTestMode mode);
 /// @return True if data was retrieved, false if no data is available.
 SMX_API bool SMX_GetTestData(int pad, SMXSensorTestModeData *data);
 
-/// Configures the polling rates for the SDK's background threads.
-/// Can be called at any time after SMX_Start().
+/// Sets the main I/O thread's loop cadence. Can be called any time after
+/// SMX_Start().
+///
+/// Input reads are interrupt-driven on per-pad poll threads that block on the
+/// device and wake the instant a report arrives, so there is no USB poll rate to
+/// tune (this replaces the former SMX_SetPollingRate, whose USB-polling argument
+/// no longer exists).
 ///
 /// @param iMainThreadMs Sleep time in milliseconds for the main I/O thread (default: 50).
 ///                      Controls how often device connections and command responses are processed.
 ///                      Values above ~100ms may delay device connection handshakes, causing
 ///                      devices to appear uninitialized or missing serial numbers.
-/// @param iUSBPollingUs Sleep time in microseconds for the USB polling thread (default: 1000).
-///                      Controls input state latency. Lower values = lower latency but more CPU.
-SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
+SMX_API void SMX_SetMainThreadSleepMs(int iMainThreadMs);
 
 /// Controls when the SMXUpdateCallback_InputState callback fires.
 /// By default (bAlwaysFire = false), the callback only fires when the input state
@@ -470,7 +473,7 @@ SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
 SMX_API void SMX_SetInputStateMode(bool bAlwaysFire);
 
 /// Returns the SDK version string.
-/// @return C-string containing the version (e.g., "1.4.0").
+/// @return C-string containing the version (e.g., "2.0.0").
 SMX_API const char *SMX_Version();
 
 /// Returns the elapsed time in seconds since the SDK was initialized.

@@ -22,6 +22,11 @@ public:
         return hid_read(m_pDev, buf, len);
     }
 
+    int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override
+    {
+        return hid_read_timeout(m_pDev, buf, len, iTimeoutMs);
+    }
+
     int Write(const uint8_t *buf, size_t len) override
     {
         return hid_write(m_pDev, buf, len);

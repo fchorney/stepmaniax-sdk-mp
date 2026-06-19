@@ -93,25 +93,11 @@ bool SMXDevice::IsConnected() const
     return IsConnectedLocked();
 }
 
-void SMXDevice::SetConnectionCallbacks()
-{
-    m_Connection.SetInputStateChangedCallback([this]() {
-        CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_InputState));
-    });
-}
-
 void SMXDevice::CloseDevice()
 {
     m_Connection.Close();
     m_bHaveConfig = false;
     CallUpdateCallback(static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_Disconnected));
-}
-
-bool SMXDevice::PollUSBData()
-{
-    if(!m_Connection.IsConnected())
-        return false;
-    return m_Connection.PollUSBData();
 }
 
 void SMXDevice::SendCommand(const string &cmd, const function<void(string)>& pComplete)

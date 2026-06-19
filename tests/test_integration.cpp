@@ -237,22 +237,15 @@ TEST_CASE("Real hardware: input state reads")
 
     MESSAGE("Connected ", data.iConnected.load(), " pad(s)");
 
-    // Measure USB input packet rate for 1 second at default polling rate (1000us).
+    // Input reads are interrupt-driven (each pad's poll thread blocks on the
+    // device), so there is no USB poll rate to vary: measure the report arrival
+    // rate once over one second.
     data.iPacketCount = 0;
     this_thread::sleep_for(chrono::seconds(1));
-    int iPacketsDefault = data.iPacketCount.load();
+    int iPackets = data.iPacketCount.load();
 
-    MESSAGE("Default (1000us): ", iPacketsDefault, " input packets/sec");
-    CHECK(iPacketsDefault >= 10);
-
-    // Measure again at 500us polling rate
-    SMX_SetPollingRate(50, 500);
-    data.iPacketCount = 0;
-    this_thread::sleep_for(chrono::seconds(1));
-    int iPacketsFast = data.iPacketCount.load();
-
-    MESSAGE("Fast (500us): ", iPacketsFast, " input packets/sec");
-    CHECK(iPacketsFast >= 10);
+    MESSAGE("Interrupt-driven: ", iPackets, " input packets/sec");
+    CHECK(iPackets >= 10);
 
     SMX_Stop();
 }

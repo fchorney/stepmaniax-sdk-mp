@@ -45,6 +45,64 @@ struct SMXDeviceInfo
     uint16_t m_iFirmwareVersion = 0;
 };
 
+/// Cross-thread state for one connection, held by std::shared_ptr so both the
+/// read side (SMXPollHandle, on a per-pad poll thread) and the command side
+/// (SMXDeviceConnection, on the main I/O thread) can reference it independently.
+/// This mirrors the Arc<ConnShared> in the Rust SDK: the poll thread writes the
+/// input state, read-error flag, and Report 6 buffer; the main thread reads them.
+/// Because the shared object lives on the heap and outlives a pad-slot swap, the
+/// poll thread keeps reading its own device across a swap with no rebinding.
+struct SMXConnectionShared
+{
+    /// Current panel press bitmask. Written by the poll thread, read anywhere.
+    std::atomic<uint16_t> m_iInputState{0};
+
+    /// Fire the input callback on every Report 3 packet (true) or only on change
+    /// (false, default). Written by the main thread, read by the poll thread.
+    std::atomic<bool> m_bAlwaysFireInputCallback{false};
+
+    /// Set when a read fails; the main thread polls this to close the device.
+    std::atomic<bool> m_bHadReadError{false};
+
+    /// Slot index the input callback reports. Updated on a pad swap (instead of
+    /// rebinding the callback), so the poll thread reads it lock-free.
+    std::atomic<int> m_iPadIndex{0};
+
+    /// Raw Report 6 packets accumulated by the poll thread for the main thread.
+    std::mutex m_Report6BufferMutex;
+    std::string m_sReport6Buffer;  // guarded by m_Report6BufferMutex
+
+    /// Fired from the poll thread on an input change (and on every packet when
+    /// always-fire is set). Installed once at Open() and never rebound; receives
+    /// the current pad index (m_iPadIndex) as its argument.
+    std::function<void(int pad)> m_pInputStateChangedCallback;
+};
+
+/// Read side of a connection, owned by a per-pad poll thread (mirrors Rust's
+/// PollHandle). Owns the read HID handle for the connection's lifetime and shares
+/// SMXConnectionShared with the command-side SMXDeviceConnection, so input reads
+/// run entirely off any manager lock and independently of the other pad.
+class SMXPollHandle
+{
+public:
+    SMXPollHandle(std::unique_ptr<IHIDDevice> pReadDevice, std::shared_ptr<SMXConnectionShared> pShared):
+        m_pReadDevice(std::move(pReadDevice)), m_pShared(std::move(pShared)) {}
+
+    /// Interrupt-driven poll: the first read blocks up to iFirstReadTimeoutMs (the
+    /// kernel wakes the caller the instant a report arrives), then the rest of the
+    /// OS read buffer is drained non-blocking. Report 3 (input) is parsed inline
+    /// and fires the input callback; Report 6 (command/config) is buffered for the
+    /// main thread. Returns true if Report 6 data was buffered.
+    bool PollUSBData(int iFirstReadTimeoutMs);
+
+    /// True if a read failed; the main thread checks this to close the device.
+    bool HasReadError() const { return m_pShared->m_bHadReadError.load(std::memory_order_relaxed); }
+
+private:
+    std::unique_ptr<IHIDDevice> m_pReadDevice;   // Reads only (this poll thread)
+    std::shared_ptr<SMXConnectionShared> m_pShared;
+};
+
 /// Low-level USB communication abstraction for a single StepManiaX device.
 ///
 /// This class handles:
@@ -58,49 +116,35 @@ struct SMXDeviceInfo
 /// All operations are nonblocking; commands are queued and processed in the background.
 ///
 /// ============================================================================
-/// THREADING MODEL: Split Packet Handling for Low-Latency Input State
+/// THREADING MODEL: Split read/command sides for low-latency input
 /// ============================================================================
 ///
-/// This class is accessed by TWO independent threads simultaneously:
+/// A connection is split across two objects that share SMXConnectionShared:
 ///
-/// 1. USB Polling Thread (every ~1ms, non-blocking):
-///    - Calls PollUSBData() to read raw HID packets
-///    - Parses Report 3 (input state) packets completely and inline
-///    - Updates m_iInputState atomically (no lock needed)
-///    - Extracts Report 6 (command/config) packets and appends to m_sReport6Buffer
-///    - See USBPollingThreadMain() in SMXManager.cpp
+/// 1. SMXPollHandle (read side, one per-pad poll thread):
+///    - Blocks on the read handle (ReadTimeout) and wakes the instant a report
+///      arrives, then drains the rest non-blocking. See PollUSBData().
+///    - Parses Report 3 (input) inline, updates m_iInputState atomically, and
+///      fires the input callback; buffers Report 6 into m_sReport6Buffer.
+///    - Owns the read handle for the connection's lifetime; runs off any manager
+///      lock, so the two pads never block on each other and a slow USB write on
+///      the main thread can't stall input. Spawned/reaped by SMXManager.
 ///
-/// 2. Main I/O Thread (every ~50ms, holds m_pLock):
-///    - Calls CheckReads() to process Report 6 packets from m_sReport6Buffer
-///    - Handles fragmentation (START/END flags), command callbacks, timeouts
-///    - Never touches Report 3 or m_iInputState
-///    - See ThreadMain() in SMXManager.cpp
+/// 2. SMXDeviceConnection (command side, main I/O thread, holds m_pLock):
+///    - CheckReads() drains Report 6 from m_sReport6Buffer; handles fragmentation,
+///      command callbacks, timeouts. Never touches Report 3 or m_iInputState.
+///    - Owns the write handle; queues and sends commands. See ThreadMain().
 ///
-/// MEMBER VARIABLE THREADING GUARANTEES:
-///
-///   Thread-Safe Atomics (lock-free):
-///   - m_iInputState: std::atomic<uint16_t>, updated by USB thread, read by main thread
-///
-///   Protected by m_Report6BufferMutex (USB thread writes, main thread reads):
-///   - m_sReport6Buffer: Report 6 packets accumulated by USB thread, consumed by CheckReads()
-///
-///   Protected by External Lock (m_pLock held when called):
-///   - m_sReadBuffers: completed packets queued for application
-///   - m_sCurrentReadBuffer: fragment accumulation for Report 6
-///   - m_aPendingCommands, m_pCurrentCommand: command queue state
-///   - m_bActive, m_bGotInfo: connection state
-///
-///   Main Thread Only (no synchronization needed):
-///   - m_pWriteDevice, m_sPath, m_DeviceInfo: immutable after Open()
-///   - m_pReadDevice: used only by PollUSBData() on the USB polling thread
-///
-///   Protected by External Lock (read by USB thread, written by main thread):
-///   - m_pInputStateChangedCallback: read in PollUSBData(), set via SetConnectionCallbacks()
+/// Cross-thread state lives in SMXConnectionShared (held by shared_ptr by both
+/// objects): m_iInputState / m_bHadReadError / m_iPadIndex (atomics),
+/// m_sReport6Buffer (m_Report6BufferMutex), and the input callback (installed
+/// once at Open, never rebound). Main-thread-only state (write handle, path,
+/// device info, read/command buffers) needs no synchronization.
 ///
 /// PROTOCOL DETAILS:
 ///
 ///   Report 3 (Input State): 3 bytes [ID=3][low byte][high byte]
-///   - Parsed inline in PollUSBData(), never buffered
+///   - Parsed inline in SMXPollHandle::PollUSBData(), never buffered
 ///   - Updates m_iInputState atomically with full 16-bit value
 ///   - Bit layout: 0-8 = panels, 9-15 = unused
 ///
@@ -110,7 +154,7 @@ struct SMXDeviceInfo
 ///     • 0x04 (START_OF_COMMAND): clears buffered fragment
 ///     • 0x01 (END_OF_COMMAND): queues complete packet to m_sReadBuffers
 ///     • 0x02 (HOST_CMD_FINISHED): invokes command callback
-///   - Buffered in m_sReport6Buffer by USB thread, processed by main thread
+///   - Buffered in m_sReport6Buffer by the poll thread, processed by main thread
 ///
 class SMXDeviceConnection
 {
@@ -127,14 +171,20 @@ public:
     SMXDeviceConnection &operator=(SMXDeviceConnection &&other) noexcept;
 
     /// Opens a HID connection using two independent handles to the same device:
-    /// one for reads (USB polling thread) and one for writes (main I/O thread),
-    /// so a read never waits behind a blocking write. Automatically requests
-    /// device info and enters a pending state until the info arrives.
+    /// one for reads (the per-pad poll thread) and one for writes (main I/O
+    /// thread), so a read never waits behind a blocking write. Creates the shared
+    /// state, stores the write handle, automatically requests device info, and
+    /// returns the read-side poll handle for the manager to run on a poll thread.
     /// @param sPath HID device path string (stored for identification).
-    /// @param pReadDevice Opened HID handle used only by PollUSBData (reads).
+    /// @param pReadDevice Opened HID handle owned by the returned poll handle.
     /// @param pWriteDevice Opened HID handle used only by CheckWrites (writes).
-    /// @return True if the device was successfully opened.
-    bool Open(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice);
+    /// @param inputChangedCb Fired from the poll thread on input change, with the
+    ///        current pad index; installed once and never rebound.
+    /// @param iPadIndex Initial slot index the input callback reports.
+    /// @return The read-side poll handle on success, or null on failure.
+    std::unique_ptr<SMXPollHandle> Open(const std::string &sPath,
+        std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice,
+        std::function<void(int pad)> inputChangedCb, int iPadIndex);
 
     /// Closes the connection and cancels all pending commands.
     /// Invokes completion callbacks with empty strings to notify of cancellation.
@@ -199,24 +249,20 @@ public:
     bool HasUnsentLights() const;
 
     /// Retrieves the current input state (pressed panels) bitmask.
-    uint16_t GetInputState() const { return m_iInputState.load(); }
-
-    /// Sets a callback to be invoked when input state (Report 3) changes from the USB polling thread.
-    /// @param cb Callback function with no parameters. Called immediately when input state changes.
-    void SetInputStateChangedCallback(std::function<void()> cb) { m_pInputStateChangedCallback = std::move(cb); }
+    uint16_t GetInputState() const { return m_pShared ? m_pShared->m_iInputState.load() : 0; }
 
     /// Sets whether the input state callback fires on every Report 3 packet (true)
     /// or only when the state actually changes (false, default).
-    void SetAlwaysFireInputCallback(bool b) { m_bAlwaysFireInputCallback.store(b, std::memory_order_relaxed); }
+    void SetAlwaysFireInputCallback(bool b) { if(m_pShared) m_pShared->m_bAlwaysFireInputCallback.store(b, std::memory_order_relaxed); }
 
-    /// Returns true if the USB polling thread encountered a read error.
+    /// Returns true if the poll thread encountered a read error.
     /// The main thread checks this to trigger device disconnect.
-    bool HasReadError() const { return m_bHadReadError.load(std::memory_order_relaxed); }
+    bool HasReadError() const { return m_pShared && m_pShared->m_bHadReadError.load(std::memory_order_relaxed); }
 
-    /// Polls for available USB data, called by the USB polling thread.
-    /// Parses Report 3 (input state) inline and buffers Report 6 for the main thread.
-    /// @return True if Report 6 data was buffered.
-    bool PollUSBData();
+    /// Updates the slot index the input callback reports. Called on a pad swap so
+    /// the running poll thread attributes input to the new slot without rebinding
+    /// the callback. No-op before Open.
+    void SetSharedPadIndex(int i) { if(m_pShared) m_pShared->m_iPadIndex.store(i, std::memory_order_relaxed); }
 
 private:
     /// Sends a device info request packet to the device.
@@ -241,12 +287,13 @@ private:
     void HandleUsbPacket(const char *pData, size_t iLen);
 
     // --- Connection state ---
-    // Two independent handles to the same physical device. The read handle is
-    // used only by PollUSBData (USB polling thread); the write handle only by
-    // CheckWrites (main I/O thread). Splitting them means a read never waits
-    // behind a blocking write. Both are set together by Open() and reset
-    // together by Close().
-    std::unique_ptr<IHIDDevice> m_pReadDevice;   // Reads only (USB polling thread)
+    // Cross-thread state (input bitmask, read-error flag, pad index, Report 6
+    // buffer, input callback) shared with the read-side SMXPollHandle. Created by
+    // Open(), released by Close(); null while disconnected. The poll thread holds
+    // its own shared_ptr to the same object, so it stays valid across a pad swap.
+    std::shared_ptr<SMXConnectionShared> m_pShared;
+    // Write handle (main I/O thread only). The read handle lives in the poll
+    // handle, not here. Set by Open(), reset by Close().
     std::unique_ptr<IHIDDevice> m_pWriteDevice;  // Writes only (main I/O thread)
     std::string m_sPath;                    // HID device path for identification
     bool m_bActive = false;                 // True after activation command sent
@@ -256,18 +303,8 @@ private:
     std::deque<std::string> m_sReadBuffers;     // Complete packets ready for application
     std::string m_sCurrentReadBuffer;           // Fragment accumulation for Report 6
 
-    // --- Input state (lock-free atomics, USB thread writes, any thread reads) ---
-    std::atomic<uint16_t> m_iInputState{0};              // Current panel press bitmask
-    std::atomic<bool> m_bAlwaysFireInputCallback{false};  // Fire callback on every packet
-    std::atomic<bool> m_bHadReadError{false};             // USB thread signals read failure
-
-    // --- Report 6 buffer (protected by m_Report6BufferMutex) ---
-    std::string m_sReport6Buffer;           // Raw Report 6 packets from USB thread
-    std::mutex m_Report6BufferMutex;        // Guards m_sReport6Buffer
-
-    // --- Device metadata and callbacks ---
-    SMXDeviceInfo m_DeviceInfo;                          // Cached device info (fw version, serial, P1/P2)
-    std::function<void()> m_pInputStateChangedCallback;  // Fired from USB thread on state change
+    // --- Device metadata ---
+    SMXDeviceInfo m_DeviceInfo;                 // Cached device info (fw version, serial, P1/P2)
 
     /// Represents a command pending transmission or awaiting response.
     /// Commands may be fragmented into multiple 64-byte HID packets.

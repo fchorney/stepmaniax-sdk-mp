@@ -61,6 +61,14 @@ int RecordingHIDDevice::Read(uint8_t *buf, size_t len)
     return iResult;
 }
 
+int RecordingHIDDevice::ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs)
+{
+    int iResult = m_pDevice->ReadTimeout(buf, len, iTimeoutMs);
+    if(iResult > 0)
+        WriteRecord('R', buf, static_cast<size_t>(iResult));
+    return iResult;
+}
+
 int RecordingHIDDevice::Write(const uint8_t *buf, size_t len)
 {
     int iResult = m_pDevice->Write(buf, len);
@@ -150,6 +158,14 @@ ReplayHIDDevice::ReplayHIDDevice(const string &sInputPath)
             m_aReadBatches.emplace_back();  // start new batch
         }
     }
+}
+
+// Replay is deterministic and driven by the write count, not real USB timing,
+// so a timeout has no meaning here: return whatever is currently available
+// (possibly nothing) exactly like the non-blocking Read.
+int ReplayHIDDevice::ReadTimeout(uint8_t *buf, size_t len, int /*iTimeoutMs*/)
+{
+    return Read(buf, len);
 }
 
 int ReplayHIDDevice::Read(uint8_t *buf, size_t len)

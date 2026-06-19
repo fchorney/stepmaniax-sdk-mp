@@ -167,11 +167,11 @@ SMX_API bool SMX_GetTestData(const int pad, SMXSensorTestModeData *data)
     return dev->GetTestData(*data);
 }
 
-SMX_API void SMX_SetPollingRate(int iMainThreadMs, int iUSBPollingUs)
+SMX_API void SMX_SetMainThreadSleepMs(int iMainThreadMs)
 {
     if(iMainThreadMs > 100)
         Log(ssprintf("Warning: main thread sleep of %dms may delay device connections and cause missed serial numbers. Recommended: 50ms or below.", iMainThreadMs));
-    if(g_pSMX) g_pSMX->SetPollingRate(iMainThreadMs, iUSBPollingUs);
+    if(g_pSMX) g_pSMX->SetMainThreadSleepMs(iMainThreadMs);
 }
 
 SMX_API void SMX_SetInputStateMode(bool bAlwaysFire)

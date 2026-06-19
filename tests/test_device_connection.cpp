@@ -28,6 +28,14 @@ public:
         return static_cast<int>(n);
     }
 
+    // These connection unit tests drive the poll handle a single call at a time
+    // and assert on the result, so the blocking-first read just returns whatever
+    // is queued (or nothing) immediately, like Read.
+    int ReadTimeout(uint8_t *buf, size_t len, int /*iTimeoutMs*/) override
+    {
+        return Read(buf, len);
+    }
+
     int Write(const uint8_t *buf, size_t len) override
     {
         m_aWrites.emplace_back(buf, buf + len);
@@ -55,6 +63,7 @@ class FakeHIDView : public IHIDDevice
 public:
     explicit FakeHIDView(IHIDDevice *p) : m_p(p) {}
     int Read(uint8_t *buf, size_t len) override { return m_p->Read(buf, len); }
+    int ReadTimeout(uint8_t *buf, size_t len, int iTimeoutMs) override { return m_p->ReadTimeout(buf, len, iTimeoutMs); }
     int Write(const uint8_t *buf, size_t len) override { return m_p->Write(buf, len); }
     void Close() override { m_p->Close(); }
 private:
@@ -62,11 +71,12 @@ private:
 };
 
 // Opens conn over a shared fake: the read handle is a non-owning view, the write
-// handle owns pFake. Replaces the old single-handle conn.Open(path, pDevice).
-static void OpenSplit(SMXDeviceConnection &conn, IHIDDevice *pFake, const std::string &path = "/fake/path")
+// handle owns pFake. Returns the read-side poll handle (run PollUSBData on it),
+// with a no-op input callback. Replaces the old single-handle conn.Open.
+static std::unique_ptr<SMXPollHandle> OpenSplit(SMXDeviceConnection &conn, IHIDDevice *pFake, const std::string &path = "/fake/path")
 {
-    conn.Open(path, unique_ptr<IHIDDevice>(new FakeHIDView(pFake)),
-                    unique_ptr<IHIDDevice>(pFake));
+    return conn.Open(path, unique_ptr<IHIDDevice>(new FakeHIDView(pFake)),
+                    unique_ptr<IHIDDevice>(pFake), nullptr, 0);
 }
 
 // --- Helper: build a Report 6 packet for PollUSBData ---
@@ -99,7 +109,7 @@ static vector<uint8_t> MakeDeviceInfoPayload(char player, uint16_t fwVersion, co
 // --- Helper: complete the device info handshake ---
 // Open() queues a RequestDeviceInfo command. Update() sends it via CheckWrites.
 // Then we feed the device info response and call Update() again to process it.
-static void CompleteDeviceInfoHandshake(SMXDeviceConnection &conn, FakeHIDDevice *pFake,
+static void CompleteDeviceInfoHandshake(SMXDeviceConnection &conn, SMXPollHandle *poll, FakeHIDDevice *pFake,
                                          char player = '0', uint16_t fwVersion = 5)
 {
     string sError;
@@ -111,7 +121,7 @@ static void CompleteDeviceInfoHandshake(SMXDeviceConnection &conn, FakeHIDDevice
                           0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10};
     auto payload = MakeDeviceInfoPayload(player, fwVersion, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));  // DEVICE_INFO flag
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     // Second Update processes the device info response
     conn.Update(sError);
@@ -126,11 +136,11 @@ TEST_CASE("Report 3 updates input state") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice), nullptr, 0);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x10, 0x00});
 
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     CHECK(conn.GetInputState() == 0x0010);
 }
@@ -140,12 +150,12 @@ TEST_CASE("Report 3 updates with multiple panels") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice), nullptr, 0);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x11, 0x01});
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     CHECK(conn.GetInputState() == 0x0111);
 }
@@ -155,19 +165,17 @@ TEST_CASE("Report 3 fires input state callback on change") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
-
     int iCallbackCount = 0;
-    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice),
+                          [&](int) { iCallbackCount++; }, 0);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
-    string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     CHECK(iCallbackCount == 1);
 
-    // Same state again — should NOT fire
+    // Same state again should NOT fire.
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     CHECK(iCallbackCount == 1);
 }
 
@@ -176,17 +184,15 @@ TEST_CASE("Report 3 always-fire mode fires on duplicate state") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
+    int iCallbackCount = 0;
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice),
+                          [&](int) { iCallbackCount++; }, 0);
     conn.SetAlwaysFireInputCallback(true);
 
-    int iCallbackCount = 0;
-    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
-
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});
 
-    string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     CHECK(iCallbackCount == 2);
 }
@@ -196,9 +202,9 @@ TEST_CASE("PollUSBData returns false when no data") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice), nullptr, 0);
 
-    CHECK_FALSE(conn.PollUSBData());
+    CHECK_FALSE(poll->PollUSBData(0));
     CHECK_FALSE(conn.HasReadError());
 }
 
@@ -206,15 +212,16 @@ TEST_CASE("Read error propagates") {
     class ErrorDevice : public IHIDDevice {
     public:
         int Read(uint8_t *, size_t) override { return -1; }
+        int ReadTimeout(uint8_t *, size_t, int) override { return -1; }
         int Write(const uint8_t *, size_t) override { return 0; }
         void Close() override {}
     };
 
     SMXDeviceConnection conn;
-    // PollUSBData reads the read handle, so the error must come from it.
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new ErrorDevice()), unique_ptr<IHIDDevice>(new ErrorDevice()));
+    // The read error must come from the read handle (the poll handle reads it).
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new ErrorDevice()), unique_ptr<IHIDDevice>(new ErrorDevice()), nullptr, 0);
 
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     CHECK(conn.HasReadError());
 }
 
@@ -223,11 +230,11 @@ TEST_CASE("Close resets state") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice), nullptr, 0);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0xFF, 0x00});
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     CHECK(conn.GetInputState() == 0x00FF);
 
     conn.Close();
@@ -242,15 +249,15 @@ TEST_CASE("Close resets state") {
 TEST_CASE("Report 6 single packet with START|END is queued as complete packet") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     // START|END flags, payload = "AB"
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND, {'A', 'B'}));
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     string out;
@@ -262,8 +269,8 @@ TEST_CASE("Report 6 single packet with START|END is queued as complete packet") 
 TEST_CASE("Report 6 multi-fragment reassembly") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     // Fragment 1: START
@@ -274,7 +281,7 @@ TEST_CASE("Report 6 multi-fragment reassembly") {
     pFake->QueueRead(MakeReport6(PACKET_FLAG_END_OF_COMMAND, {' ', 'W'}));
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     string out;
@@ -285,22 +292,22 @@ TEST_CASE("Report 6 multi-fragment reassembly") {
 TEST_CASE("Report 6 START clears partial buffer") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     // Partial fragment (no END)
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND, {'o', 'l', 'd'}));
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     // New START should clear the old partial data
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND, {'n', 'e', 'w'}));
     pFake->QueueRead(MakeReport6(PACKET_FLAG_END_OF_COMMAND, {'!'}));
 
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     string out;
@@ -311,14 +318,14 @@ TEST_CASE("Report 6 START clears partial buffer") {
 TEST_CASE("Report 6 packets not queued when inactive") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     // NOT calling conn.SetActive(true)
 
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND, {'X'}));
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     string out;
@@ -332,7 +339,7 @@ TEST_CASE("Report 6 packets not queued when inactive") {
 TEST_CASE("Open queues device info request and IsConnectedWithDeviceInfo is false") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
     CHECK(conn.IsConnected());
     CHECK_FALSE(conn.IsConnectedWithDeviceInfo());
@@ -341,9 +348,9 @@ TEST_CASE("Open queues device info request and IsConnectedWithDeviceInfo is fals
 TEST_CASE("Device info handshake sets IsConnectedWithDeviceInfo") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
-    CompleteDeviceInfoHandshake(conn, pFake, '0', 5);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'0', 5);
 
     CHECK(conn.IsConnectedWithDeviceInfo());
 }
@@ -351,9 +358,9 @@ TEST_CASE("Device info handshake sets IsConnectedWithDeviceInfo") {
 TEST_CASE("Device info parses player 1 correctly") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
-    CompleteDeviceInfoHandshake(conn, pFake, '0', 7);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'0', 7);
 
     SMXDeviceInfo info = conn.GetDeviceInfo();
     CHECK_FALSE(info.m_bP2);
@@ -363,10 +370,10 @@ TEST_CASE("Device info parses player 1 correctly") {
 TEST_CASE("Device info parses player 2 correctly") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
     // player == '1' means P2
-    CompleteDeviceInfoHandshake(conn, pFake, '1', 3);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'1', 3);
 
     SMXDeviceInfo info = conn.GetDeviceInfo();
     CHECK(info.m_bP2);
@@ -376,9 +383,9 @@ TEST_CASE("Device info parses player 2 correctly") {
 TEST_CASE("Device info parses serial number") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
-    CompleteDeviceInfoHandshake(conn, pFake, '0', 5);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'0', 5);
 
     SMXDeviceInfo info = conn.GetDeviceInfo();
     // Serial bytes 0x01..0x10 → hex "0102030405060708090a0b0c0d0e0f10"
@@ -388,7 +395,7 @@ TEST_CASE("Device info parses serial number") {
 TEST_CASE("Device info response without pending command is ignored") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
     // Send the device info request first
     string sError;
@@ -398,14 +405,14 @@ TEST_CASE("Device info response without pending command is ignored") {
     uint8_t serial[SERIAL_SIZE] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
     CHECK(conn.IsConnectedWithDeviceInfo());
 
     // Now send another device info response with no command in flight — should be ignored
     auto payload2 = MakeDeviceInfoPayload('1', 99, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload2));
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     // Should still have original info
@@ -421,8 +428,8 @@ TEST_CASE("Device info response without pending command is ignored") {
 TEST_CASE("SendCommand writes fragmented HID packets") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     conn.SendCommand("test");
@@ -449,8 +456,8 @@ TEST_CASE("SendCommand writes fragmented HID packets") {
 TEST_CASE("SendCommand callback fires on HOST_CMD_FINISHED") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     string sResponse;
@@ -461,7 +468,7 @@ TEST_CASE("SendCommand callback fires on HOST_CMD_FINISHED") {
 
     // Device responds with HOST_CMD_FINISHED | START | END
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'G', 0x05, 'c', 'f', 'g'}));
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     CHECK(sResponse == "G\x05""cfg");
@@ -470,8 +477,8 @@ TEST_CASE("SendCommand callback fires on HOST_CMD_FINISHED") {
 TEST_CASE("Commands are serialized - second waits for first") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     string sResp1, sResp2;
@@ -488,7 +495,7 @@ TEST_CASE("Commands are serialized - second waits for first") {
 
     // Complete command A
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'a'}));
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
     CHECK(sResp1 == "a");
 
@@ -505,8 +512,8 @@ TEST_CASE("Pending command callback does not fire without response") {
     bool bCallbackFired = false;
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     conn.SendCommand("X", [&](string) { bCallbackFired = true; });
@@ -523,8 +530,8 @@ TEST_CASE("Pending command callback does not fire without response") {
 TEST_CASE("Close invokes pending command callbacks with empty string") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     string sResp1 = "not_called";
@@ -556,6 +563,7 @@ TEST_CASE("Write error invokes callback and reports error") {
             m_aReads.pop();
             return static_cast<int>(n);
         }
+        int ReadTimeout(uint8_t *buf, size_t len, int) override { return Read(buf, len); }
         int Write(const uint8_t *, size_t) override {
             m_iWriteCount++;
             // Succeed for device info request, fail for subsequent commands
@@ -566,7 +574,7 @@ TEST_CASE("Write error invokes callback and reports error") {
 
     auto pFake = new FailWriteDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
     // Complete device info handshake (first write succeeds)
     string sError;
@@ -575,7 +583,7 @@ TEST_CASE("Write error invokes callback and reports error") {
     uint8_t serial[SERIAL_SIZE] = {};
     auto payload = MakeDeviceInfoPayload('0', 5, serial);
     pFake->QueueRead(MakeReport6(PACKET_FLAG_DEVICE_INFO, payload));
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
     REQUIRE(conn.IsConnectedWithDeviceInfo());
 
@@ -598,15 +606,15 @@ TEST_CASE("Write error invokes callback and reports error") {
 TEST_CASE("Unsolicited HOST_CMD_FINISHED does not crash") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake);
     conn.SetActive(true);
 
     // Send HOST_CMD_FINISHED with no command in flight
     pFake->QueueRead(MakeReport6(PACKET_FLAG_START_OF_COMMAND | PACKET_FLAG_END_OF_COMMAND | PACKET_FLAG_HOST_CMD_FINISHED, {'Z', 'z'}));
 
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     conn.Update(sError);
 
     CHECK(sError.empty());
@@ -625,20 +633,17 @@ TEST_CASE("Multiple Report 3 packets in single PollUSBData retains final state")
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
-
     int iCallbackCount = 0;
-    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice),
+                          [&](int) { iCallbackCount++; }, 0);
 
     // Queue multiple Report 3 packets
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // state = 0x0001
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x03, 0x00});  // state = 0x0003
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0xFF, 0x01});  // state = 0x01FF
 
-    string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
-    CHECK(sError.empty());
     CHECK(conn.GetInputState() == 0x01FF);
     CHECK(iCallbackCount == 3);  // each change fires callback
 }
@@ -648,18 +653,16 @@ TEST_CASE("Multiple Report 3 with duplicates only fires on changes") {
     unique_ptr<IHIDDevice> pDevice(pFake);
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice));
-
     int iCallbackCount = 0;
-    conn.SetInputStateChangedCallback([&]() { iCallbackCount++; });
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pFake)), std::move(pDevice),
+                          [&](int) { iCallbackCount++; }, 0);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // state = 0x0001 (change)
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x01, 0x00});  // same (no change)
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x02, 0x00});  // state = 0x0002 (change)
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x02, 0x00});  // same (no change)
 
-    string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     CHECK(conn.GetInputState() == 0x0002);
     CHECK(iCallbackCount == 2);
@@ -672,13 +675,13 @@ TEST_CASE("Multiple Report 3 with duplicates only fires on changes") {
 TEST_CASE("Move constructor transfers connection state") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake, '1', 7);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'1', 7);
 
     // Set some input state
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x42, 0x00});
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     // Move construct
     SMXDeviceConnection moved(std::move(conn));
@@ -699,12 +702,12 @@ TEST_CASE("Move constructor transfers connection state") {
 TEST_CASE("Move assignment transfers connection state") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
-    CompleteDeviceInfoHandshake(conn, pFake, '0', 3);
+    auto poll = OpenSplit(conn, pFake);
+    CompleteDeviceInfoHandshake(conn, poll.get(), pFake,'0', 3);
 
     pFake->QueueRead({HID_REPORT_INPUT_STATE, 0x10, 0x00});
     string sError;
-    conn.PollUSBData();
+    poll->PollUSBData(0);
 
     SMXDeviceConnection moved;
     moved = std::move(conn);
@@ -725,15 +728,16 @@ TEST_CASE("Close clears read error flag for reconnection") {
     class FailOnceDevice : public IHIDDevice {
     public:
         int Read(uint8_t *, size_t) override { return -1; }
+        int ReadTimeout(uint8_t *, size_t, int) override { return -1; }
         int Write(const uint8_t *, size_t) override { return 64; }
         void Close() override {}
     };
 
     SMXDeviceConnection conn;
-    conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FailOnceDevice()), unique_ptr<IHIDDevice>(new FailOnceDevice()));
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FailOnceDevice()), unique_ptr<IHIDDevice>(new FailOnceDevice()), nullptr, 0);
 
     // Trigger a read error
-    conn.PollUSBData();
+    poll->PollUSBData(0);
     CHECK(conn.HasReadError());
 
     // Close should clear the error flag
@@ -752,7 +756,7 @@ TEST_CASE("Close clears read error flag for reconnection") {
 TEST_CASE("Lights commands are tagged for backlog bounding; sensor/config are not") {
     auto pFake = new FakeHIDDevice();
     SMXDeviceConnection conn;
-    OpenSplit(conn, pFake);
+    auto poll = OpenSplit(conn, pFake);
 
     // Only the auto device-info request is queued so far (not a lights command).
     CHECK_FALSE(conn.HasUnsentLights());

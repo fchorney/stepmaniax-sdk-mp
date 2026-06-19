@@ -164,19 +164,19 @@ static void PrintResults()
 
 int main(int argc, char **argv)
 {
-    const int poll_us = argc > 1 ? atoi(argv[1]) : 500;
+    (void)argc; (void)argv;
 
     signal(SIGINT,  [](int){ g_running = false; });
     signal(SIGTERM, [](int){ g_running = false; });
 
     printf("SMX Input Timing Probe\n");
-    printf("USB poll sleep: %d us (%d Hz)\n", poll_us, 1000000 / poll_us);
+    printf("Input reads are interrupt-driven (each pad's poll thread blocks on the device).\n");
     printf("Precision floor: ~1ms (Full Speed USB frame)."
            " Gaps < %" PRIu64 "us are drain artifacts.\n\n",
            BURST_THRESHOLD_US);
 
     SMX_Start(OnStateChanged, nullptr);
-    SMX_SetPollingRate(50, poll_us);
+    SMX_SetMainThreadSleepMs(50);
 
     printf("Waiting for a pad");
     fflush(stdout);

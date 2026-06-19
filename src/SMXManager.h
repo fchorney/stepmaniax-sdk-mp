@@ -30,7 +30,7 @@ int GetOverrideSwap(const std::string asAssignment[2], const SMXInfo &info0, con
 // Manages the lifecycle of all connected StepManiaX devices. This class is
 // responsible for:
 // - Enumerating and discovering SMX devices via HID
-// - Running a USB polling thread for low-latency input state updates
+// - Running one per-pad poll thread for low-latency, interrupt-driven input
 // - Running a main I/O thread for device connections, commands, and config
 // - Ensuring proper device ordering (Player 1 and Player 2)
 // - Notifying the application of device state changes via callbacks
@@ -61,7 +61,11 @@ public:
     /// Applies immediately, firing Connected callbacks for any slot that changed.
     void SetPlayerAssignment(const std::string &sP1Serial, const std::string &sP2Serial);
 
-    void SetPollingRate(int iMainThreadMs, int iUSBPollingUs);
+    /// Sets the main-thread loop cadence (milliseconds), which paces lifecycle
+    /// work: enumeration, command writes, lights, and config/sensor responses.
+    /// Input reads are no longer paced by a poll interval: each pad's poll thread
+    /// blocks on the device and wakes the instant a report arrives.
+    void SetMainThreadSleepMs(int iMainThreadMs);
     void ReenableAutoLights();
     void SetPlatformLights(const char *pLightData);
 
@@ -72,12 +76,32 @@ public:
     void SetInputStateMode(bool bAlwaysFire);
 
 private:
-    void USBPollingThreadMain();
     void ThreadMain();
     void UpdatePanelTestMode();
     void AttemptConnections();
     bool CorrectDeviceOrder();
     void SendPendingLightsCommands();
+
+    /// Body of a per-pad poll thread: block on the device (interrupt-driven),
+    /// fire input callbacks inline, and wake the main thread for buffered Report 6
+    /// data or a read error. Exits on stop, global shutdown, or a read error.
+    void PadPollLoop(SMXPollHandle *pPoll, const std::shared_ptr<std::atomic<bool>> &pStop);
+
+    /// Starts a poll thread for the given slot, handing it ownership of the read
+    /// handle. The slot's prior thread (if any) must already be reaped.
+    void SpawnPollThread(int slot, std::unique_ptr<SMXPollHandle> pPoll);
+
+    /// Signals the slot's poll thread to stop and joins it (returns within one
+    /// read timeout); a no-op if the slot has no thread.
+    void StopAndJoinPollThread(int slot);
+
+    /// A running per-pad poll thread plus the flag used to stop it. The thread
+    /// owns its SMXPollHandle and does blocking reads, so each pad's input is read
+    /// independently. Movable so the array can be swapped on a pad reorder.
+    struct PollThread {
+        std::shared_ptr<std::atomic<bool>> m_pStop;
+        std::thread m_Thread;
+    };
 
     /// A single lights command to be sent to both pads at a scheduled time.
     struct PendingLightsCommand {
@@ -87,27 +111,27 @@ private:
 
     // --- Synchronization and threading ---
     std::recursive_mutex m_Lock;                // Protects all mutable state below
-    // Guards the USB polling thread's access to the device read handles and the
-    // m_Devices array shape, separate from m_Lock so a blocking write held under
-    // m_Lock (CheckWrites) can never stall input reads. The USB polling thread
-    // takes ONLY this lock; the main thread takes m_Lock and then m_PollLock
-    // (lock order: m_Lock -> m_PollLock) only when it opens, closes, or swaps a
-    // connection. The input callback fired from PollUSBData runs under this lock
-    // and must not call back into m_Lock-taking SMX_* APIs (SMX_GetInputState is
-    // lock-free and safe); see the threading notes in SMXDeviceConnection.h.
-    std::mutex m_PollLock;
     std::thread m_Thread;                       // Main I/O thread (connections, commands, config)
-    std::thread m_USBPollingThread;             // USB polling thread (input state reads)
-    // For deadlock detection in destructor. Atomic because each is written by its
-    // thread at startup and read by the destructor without other synchronization.
+    // One poll thread per pad. Each owns its SMXPollHandle (read handle + shared
+    // state) and does blocking reads entirely off m_Lock, so a slow USB write on
+    // the main thread can't stall input and the two pads never block on each
+    // other. Touched only by the main thread (spawn on connect, reap on read
+    // error, swap on reorder) and the destructor (after the main thread joins),
+    // so it needs no lock of its own. The input callback fired from a poll thread
+    // must not call back into m_Lock-taking SMX_* APIs (SMX_GetInputState is
+    // lock-free and safe); see the threading notes in SMXDeviceConnection.h.
+    PollThread m_PollThreads[2];
+    // For deadlock detection in the destructor (catches SMX_Stop() called from
+    // within a callback). Atomic so they can be read without synchronization: the
+    // main thread id is written once at startup; each poll thread id is written by
+    // SpawnPollThread, swapped on reorder, cleared on reap.
     std::atomic<std::thread::id> m_MainThreadId{std::thread::id()};
-    std::atomic<std::thread::id> m_USBPollingThreadId{std::thread::id()};
+    std::atomic<std::thread::id> m_PollThreadIds[2];
     std::condition_variable_any m_Cond;         // Signals main thread on Report 6 data or shutdown
-    std::atomic<bool> m_bShutdown{false};       // Set to true to stop both threads
+    std::atomic<bool> m_bShutdown{false};       // Set to true to stop the threads
 
-    // --- Polling rate configuration ---
+    // --- Main loop cadence ---
     std::atomic<int> m_iMainThreadSleepMs{50};  // Main thread sleep between iterations (ms)
-    std::atomic<int> m_iUSBPollingSleepUs{1000}; // USB polling thread sleep between cycles (µs)
 
     // --- Devices and discovery ---
     SMXDevice m_Devices[2];                     // Pad slots: index 0 = P1, index 1 = P2
