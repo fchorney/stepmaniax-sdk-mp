@@ -54,17 +54,58 @@ Commands are sent by breaking out of the 0x00 stream with a specific framing seq
 
 During normal operation, the MCU cycles through three commands at ~30 Hz to update panel LEDs:
 
-| Command | Hex | Purpose | Data |
-|---------|-----|---------|------|
-| `'2'` | 0x32 | Top half of panel LEDs (rows 0-1 of 4×4 grid) | 9 panels × 8 LEDs × 3 bytes RGB |
-| `'3'` | 0x33 | Bottom half of panel LEDs (rows 2-3 of 4×4 grid) | 9 panels × 8 LEDs × 3 bytes RGB |
-| `'4'` | 0x34 | Inner 3×3 LED grid (firmware v4+ / 25-LED panels) | 9 panels × 9 LEDs × 3 bytes RGB |
+| Command | Hex | Purpose | Data | Payload bytes (incl. terminator) |
+|---------|-----|---------|------|----------------------------------|
+| `'2'` | 0x32 | Top half of panel LEDs (rows 0-1 of 4×4 grid) | 9 panels × 8 LEDs × 3 bytes RGB | 217 |
+| `'3'` | 0x33 | Bottom half of panel LEDs (rows 2-3 of 4×4 grid) | 9 panels × 8 LEDs × 3 bytes RGB | 217 |
+| `'4'` | 0x34 | Inner 3×3 LED grid (firmware v4+ / 25-LED panels) | 9 panels × 9 LEDs × 3 bytes RGB | 244 |
 
 The cycle repeats: `'4'` → `'2'` → `'3'` → `'4'` → ...
 
 This matches the original SDK's `SMXManager::SetLights()` which splits panel LED data into three commands sent at 30 FPS. The panel has a 4×4 outer grid (split into top/bottom halves) plus a 3×3 inner grid for 25-LED panels. The MCU receives the lighting command over USB and forwards it to the panels over this UART bus.
 
 In this capture, the RGB data is all zeros (0x00) because the pad is in the service menu with no active lighting — the "idle clock" appearance is literally the MCU sending lighting commands with all-black pixel data.
+
+**Payload byte counts and wire time:**
+
+Each command byte is followed by exactly the payload bytes shown above (RGB data + one `'\n'` (0x0A) terminator). Including the command byte itself:
+
+| Segment | Bytes on wire |
+|---------|--------------|
+| `'4'` command + payload | 1 + 244 = 245 |
+| `'2'` command + payload | 1 + 217 = 218 |
+| `'3'` command + payload | 1 + 217 = 218 |
+| **Full cycle total** | **681** |
+
+At 250 kbaud / 8N1 (40 µs per byte): 681 × 40 µs = **27.24 ms minimum wire time** per cycle. At 30 fps (33.33 ms per cycle) this leaves ~6 ms of idle time per cycle.
+
+**RGB values on the bus are pre-scaled:**
+
+The MCU applies `LED_COLOR_SCALE = 0.6666` to all RGB values before transmitting them. A bus value of 170 therefore represents an original color of 255. When replaying or displaying captured bus data, multiply all RGB bytes by `1 / 0.6666 ≈ 1.5` to recover the original unscaled colors; failing to do so makes lights appear approximately 33% dimmer than intended.
+
+### Gameplay vs. Service-Menu Framing
+
+The BREAK + IDLE gap command framing described above applies to **service-menu / idle operation only**. During active gameplay the framing is fundamentally different:
+
+- **No BREAK condition is sent** between individual commands or between cycles.
+- The three commands (`'4'`, `'2'`, `'3'`) are transmitted **back-to-back** with minimal inter-byte gaps within each cycle.
+- The only reliable idle gap is the **inter-cycle gap** (~6 ms) that occurs between the end of `'3'` and the start of the next `'4'` while the MCU waits for the next 30 Hz frame boundary.
+
+This means a receiver that relies on detecting BREAK conditions to find command starts will see no boundaries at all during gameplay.
+
+**Command byte false-positive hazard:**
+
+The command byte values `0x32` (50), `0x33` (51), and `0x34` (52) are all valid mid-brightness RGB color values and appear regularly inside lighting payloads. A parser that naively scans the byte stream for these values will find many false positives.
+
+Reliable command boundary detection requires one of the following strategies:
+
+| Strategy | Applicable to | How it works |
+|----------|--------------|--------------|
+| BREAK detection | Service menu / idle | Detect UART line held LOW for > 10 bit times (~400 µs at 250 kbaud) |
+| UART idle timeout | Real-time (e.g. embedded receiver) | Treat the first byte received after > ~5 ms of line silence as a command byte, then count exactly 681 bytes to find the next boundary |
+| Full triplet validation | Offline parsing | Scan for `0x34`, then verify `0x32` at exactly +245 bytes and `0x33` at exactly +463 bytes; accept only if all three match the expected sequence |
+
+The triplet validation approach is robust for offline use: a false `0x34` in RGB data would also need to have `0x32` at a specific offset and `0x33` at another specific offset, which is extremely unlikely in practice.
 
 ### Sensor Test Command
 
@@ -334,5 +375,5 @@ Test mode:    MCU sends command on data bus
 - **What is the `'B1P'` command format?** Does `'1'` correspond to the sensor test mode number? Captures with different test modes (calibrated `'0'`, noise `'2'`, tare `'3'`) would confirm whether the middle byte changes. `'B'` might be "broadcast" and `'P'` might be "poll."
 - **What is the `'U'` command?** Not present in the original SDK. Seen 19 times at startup in the menuing capture. Possibly auto-calibration, panel reset, or a game-specific firmware command. `'U4'` variant seen once.
 - **How does the daisy chain affect command delivery?** Do panels consume/modify bytes, or is it a pure broadcast where all panels see all commands? The config write (`'w'`) sends the full 250-byte config — do all panels receive and apply it, or is there addressing?
-- **What determines the inter-command timing?** The gap between `'4'` and the next `'2'` is much longer (~3.5-4ms) than between `'2'`→`'3'` or `'3'`→`'4'` (~0.8ms). The original SDK notes that firmware v4+ waits for panel TX to flush before processing the next command.
+- **What determines the inter-command timing?** In the service-menu capture, the gap between `'4'` and the next `'2'` is much longer (~3.5-4ms) than between `'2'`→`'3'` or `'3'`→`'4'` (~0.8ms). The original SDK notes that firmware v4+ waits for panel TX to flush before processing the next command, which likely explains the longer `'4'`→`'2'` gap (the panels transmit sensor data back to the MCU after receiving the inner-grid command). During gameplay the exact distribution of the ~6 ms inter-cycle idle across vs. within cycles is unconfirmed from captures so far; this matters for choosing a reliable idle-timeout threshold in real-time receivers (the threshold must be above the within-cycle inter-command gap but below the inter-cycle gap).
 - **What are the extended HIGH gaps (~88-117µs) within the lighting data?** They appear 4 times after each lighting command within the 0x00 data stream. Possibly panel acknowledgment windows or daisy-chain propagation delays.

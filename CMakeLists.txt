@@ -131,6 +131,11 @@ if(BUILD_SAMPLE)
     # characterize the USB 1ms precision floor and drain artifact rate.
     add_executable(smx-input-timing sample/input_timing.cpp)
     target_link_libraries(smx-input-timing PRIVATE smx-mp)
+
+    # Internal bus command probe: triggers each MCU→panel bus command type in
+    # isolation so a logic analyzer can capture them for protocol documentation.
+    add_executable(smx-bus-probe sample/bus_probe.cpp)
+    target_link_libraries(smx-bus-probe PRIVATE smx-mp)
 endif()
 
 # Tests
