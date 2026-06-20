@@ -5,8 +5,10 @@
 // internal UART bus. Use a logic analyzer (Saleae etc.) running continuously
 // and note the printed timestamps to locate each command in the capture.
 //
-// Background: a 30Hz lights loop sends all-black data so the pad stays active
-// (this produces the '4'/'2'/'3' triplet stream at baseline).
+// A 500ms heartbeat sends all-black lights to prevent the MCU from reverting
+// to its stored auto-lighting GIF (which would flood the bus with 30Hz
+// '4'/'2'/'3' animation traffic). The heartbeat keeps the MCU in
+// externally-controlled mode with minimal noise: two all-zero triplets/second.
 //
 // Build:  cmake -DBUILD_SAMPLE=ON && make smx-bus-probe
 // Run:    ./smx-bus-probe [pad_slot]   # pad_slot = 0 (default) or 1
@@ -19,7 +21,6 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
-#include <mutex>
 #include <string>
 #include <thread>
 
@@ -30,12 +31,7 @@ using namespace std::chrono;
 volatile std::sig_atomic_t g_shouldExit = 0;
 std::atomic<bool> g_connected{false};
 std::atomic<int> g_targetPad{0};
-std::atomic<bool> g_sendLights{false};
-
-// 1350-byte buffer (2 pads x 9 panels x 25 LEDs x 3 RGB).
-// Written by main thread; read by lights thread. Guarded by g_lightsMutex.
-static char g_lightData[2 * SMX_BYTES_PER_PAD_25];
-static std::mutex g_lightsMutex;
+std::atomic<bool> g_heartbeatEnabled{false};
 
 // --- Signal handler ---------------------------------------------------------
 
@@ -69,31 +65,19 @@ void OnStateChanged(int pad, SMXUpdateCallbackReason reason, void * /*pUser*/)
     {
         printf("[disconnect] Pad %d\n", pad);
         g_connected.store(false);
-        g_sendLights.store(false);
+        g_heartbeatEnabled.store(false);
     }
 }
 
 // --- Light data helpers -----------------------------------------------------
-
-// Fill one pad's slot in the global buffer with a single solid color.
-void FillSolid(char *buf, int padIdx, uint8_t r, uint8_t g, uint8_t b)
-{
-    char *p = buf + padIdx * SMX_BYTES_PER_PAD_25;
-    for(int i = 0; i < SMX_NUM_PANELS * SMX_LEDS_PER_PANEL_25; i++)
-    {
-        p[i * 3 + 0] = static_cast<char>(r);
-        p[i * 3 + 1] = static_cast<char>(g);
-        p[i * 3 + 2] = static_cast<char>(b);
-    }
-}
 
 // Per-LED layout in the API buffer (25-LED mode, 75 bytes per panel):
 //   Bytes  0-23  (LEDs  0- 7) : outer top half  -> bus command '2' -> GREEN
 //   Bytes 24-47  (LEDs  8-15) : outer bot half  -> bus command '3' -> BLUE
 //   Bytes 48-74  (LEDs 16-24) : inner 3x3 grid  -> bus command '4' -> RED
 //
-// After LED_COLOR_SCALE (0.6666), bus values are 170 for each channel.
-void FillDistinctivePattern(char *buf, int padIdx)
+// After LED_COLOR_SCALE (0.6666), 255 maps to 170 on the bus.
+static void FillDistinctivePattern(char *buf, int padIdx)
 {
     char *p = buf + padIdx * SMX_BYTES_PER_PAD_25;
     for(int panel = 0; panel < SMX_NUM_PANELS; panel++)
@@ -123,18 +107,21 @@ void FillDistinctivePattern(char *buf, int padIdx)
     }
 }
 
-// --- Background lights thread -----------------------------------------------
+// --- Heartbeat thread -------------------------------------------------------
+//
+// Sends all-black lights every 500ms. Keeps the MCU in externally-controlled
+// mode so its firmware GIF player stays suppressed. Disabled during panel test
+// mode (the SDK drops lights commands in that state anyway).
 
-void LightsThread()
+static void HeartbeatThread()
 {
+    char black[2 * SMX_BYTES_PER_PAD_25];
+    memset(black, 0, sizeof(black));
     while(!g_shouldExit)
     {
-        if(g_sendLights.load())
-        {
-            std::lock_guard<std::mutex> lock(g_lightsMutex);
-            SMX_SetLights2(g_lightData, static_cast<int>(sizeof(g_lightData)));
-        }
-        std::this_thread::sleep_for(milliseconds(33));
+        if(g_heartbeatEnabled.load())
+            SMX_SetLights2(black, static_cast<int>(sizeof(black)));
+        std::this_thread::sleep_for(milliseconds(500));
     }
 }
 
@@ -142,62 +129,56 @@ void LightsThread()
 
 static void CmdLightsDistinctive()
 {
-    printf("Sending distinctive lights for 3s:\n");
+    char buf[2 * SMX_BYTES_PER_PAD_25];
+    memset(buf, 0, sizeof(buf));
+    FillDistinctivePattern(buf, 0);
+    FillDistinctivePattern(buf, 1);
+
+    printf("Sending distinctive lights (one frame):\n");
     printf("  bus '4' payload = RED   (inner 3x3, LEDs 16-24)\n");
     printf("  bus '2' payload = GREEN (outer top,  LEDs  0-7)\n");
     printf("  bus '3' payload = BLUE  (outer bot,  LEDs 8-15)\n");
-    {
-        std::lock_guard<std::mutex> lock(g_lightsMutex);
-        FillDistinctivePattern(g_lightData, 0);
-        FillDistinctivePattern(g_lightData, 1);
-    }
-    g_sendLights.store(true);
-    printf("  [t=%.3f] pattern active\n", SMX_GetMonotonicTime());
-    std::this_thread::sleep_for(seconds(3));
-    {
-        std::lock_guard<std::mutex> lock(g_lightsMutex);
-        memset(g_lightData, 0, sizeof(g_lightData));
-    }
-    printf("  [t=%.3f] reverted to black\n", SMX_GetMonotonicTime());
+    SMX_SetLights2(buf, static_cast<int>(sizeof(buf)));
+    printf("  [t=%.3f] sent\n", SMX_GetMonotonicTime());
 }
 
 static void CmdLightsBlack()
 {
-    printf("Sending all-black lights (bus '4'/'2'/'3' with all-zero payloads).\n");
-    {
-        std::lock_guard<std::mutex> lock(g_lightsMutex);
-        memset(g_lightData, 0, sizeof(g_lightData));
-    }
-    g_sendLights.store(true);
-    printf("  [t=%.3f] running\n", SMX_GetMonotonicTime());
+    char buf[2 * SMX_BYTES_PER_PAD_25];
+    memset(buf, 0, sizeof(buf));
+
+    printf("Sending all-black lights (one frame, bus '4'/'2'/'3' all-zero payloads).\n");
+    SMX_SetLights2(buf, static_cast<int>(sizeof(buf)));
+    printf("  [t=%.3f] sent\n", SMX_GetMonotonicTime());
 }
 
 static void CmdPlatformLights()
 {
-    // 264 bytes: 2 pads x 44 LEDs x 3 RGB. Fill both pads with solid white.
     char platBuf[2 * SMX_PLATFORM_STRIP_LEDS * 3];
     memset(platBuf, static_cast<uint8_t>(200), sizeof(platBuf));
+
     printf("Sending platform strip lights: all white (200,200,200).\n");
     printf("  USB: 'L'+strip_index+count+RGB; bus command unknown -- capture to find out.\n");
     SMX_SetPlatformLights(platBuf);
     printf("  [t=%.3f] sent\n", SMX_GetMonotonicTime());
+
     std::this_thread::sleep_for(seconds(2));
+
     memset(platBuf, 0, sizeof(platBuf));
     SMX_SetPlatformLights(platBuf);
-    printf("  [t=%.3f] platform lights cleared\n", SMX_GetMonotonicTime());
+    printf("  [t=%.3f] cleared\n", SMX_GetMonotonicTime());
 }
 
 static void CmdPanelTestOn()
 {
     printf("Enabling panel test mode (pressure test).\n");
     printf("  SDK sends USB 't 1\\n'; MCU emits bus 'l'+zeros+'\\n' FIRST then 'T1' (refreshes ~1Hz).\n");
-    g_sendLights.store(false);
-    std::this_thread::sleep_for(milliseconds(100));
+    g_heartbeatEnabled.store(false);
     SMX_SetPanelTestMode(PanelTestMode_PressureTest);
     printf("  [t=%.3f] panel test ON; holding 3s to capture at least 3 'T1' refreshes\n",
         SMX_GetMonotonicTime());
     std::this_thread::sleep_for(seconds(3));
-    printf("  Done. Use option [4] to disable.\n");
+    printf("  Done. Use option [5] to disable.\n");
 }
 
 static void CmdPanelTestOff()
@@ -205,8 +186,8 @@ static void CmdPanelTestOff()
     printf("Disabling panel test mode.\n");
     printf("  SDK sends USB 't 0\\n'; MCU emits bus 'T0'.\n");
     SMX_SetPanelTestMode(PanelTestMode_Off);
-    printf("  [t=%.3f] panel test OFF; resuming lights\n", SMX_GetMonotonicTime());
-    g_sendLights.store(true);
+    g_heartbeatEnabled.store(true);
+    printf("  [t=%.3f] panel test OFF; heartbeat resumed\n", SMX_GetMonotonicTime());
 }
 
 static void CmdSensorTest(int pad, SensorTestMode mode, const char *modeName, char modeChar)
@@ -260,7 +241,7 @@ static void PrintMenu(int pad)
 {
     printf("\n=== SMX Bus Probe (pad slot %d) ===\n", pad);
     printf("  [1]  Lights: distinctive pattern  -> bus '4'=red / '2'=green / '3'=blue\n");
-    printf("  [2]  Lights: all black             -> bus '4'/'2'/'3' with zero payloads\n");
+    printf("  [2]  Lights: all black (one frame) -> bus '4'/'2'/'3' zero payloads\n");
     printf("  [3]  Platform strip lights (white) -> bus command unknown\n");
     printf("  [4]  Panel test mode ON            -> bus 'l'+zeros then 'T1' @1Hz\n");
     printf("  [5]  Panel test mode OFF           -> bus 'T0'\n");
@@ -293,13 +274,12 @@ int main(int argc, char *argv[])
 
     printf("SMX Bus Probe v%s\n", SMX_Version());
     printf("Targeting pad slot %d. Waiting for connection...\n", iPad);
-
-    memset(g_lightData, 0, sizeof(g_lightData));
+    printf("Heartbeat: all-black lights every 500ms to suppress MCU auto-lighting GIF.\n");
 
     SMX_SetLogCallback(LogCallback);
     SMX_Start(OnStateChanged, nullptr);
 
-    std::thread lightsThread(LightsThread);
+    std::thread heartbeat(HeartbeatThread);
 
     while(!g_shouldExit && !g_connected.load())
         std::this_thread::sleep_for(milliseconds(100));
@@ -307,12 +287,12 @@ int main(int argc, char *argv[])
     if(g_shouldExit)
     {
         g_shouldExit = 1;
-        lightsThread.join();
+        heartbeat.join();
         SMX_Stop();
         return 0;
     }
 
-    g_sendLights.store(true);
+    g_heartbeatEnabled.store(true);
 
     while(!g_shouldExit)
     {
@@ -324,7 +304,7 @@ int main(int argc, char *argv[])
             if(g_shouldExit)
                 break;
             printf("Pad %d reconnected.\n", iPad);
-            g_sendLights.store(true);
+            g_heartbeatEnabled.store(true);
         }
 
         PrintMenu(iPad);
@@ -369,12 +349,12 @@ int main(int argc, char *argv[])
     }
 
     printf("Shutting down...\n");
-    g_sendLights.store(false);
+    g_heartbeatEnabled.store(false);
     SMX_SetPanelTestMode(PanelTestMode_Off);
     for(int pad = 0; pad < 2; pad++)
         SMX_SetTestMode(pad, SensorTestMode_Off);
     g_shouldExit = 1;
-    lightsThread.join();
+    heartbeat.join();
     SMX_Stop();
     return 0;
 }
