@@ -111,8 +111,25 @@ void SMXManager::SetMainThreadSleepMs(int iMainThreadMs)
 void SMXManager::ReenableAutoLights()
 {
     lock_guard<recursive_mutex> lock(m_Lock);
-    for(auto &device : m_Devices)
-        device.SendCommand("S 1\n");
+    for(int iPad = 0; iPad < 2; ++iPad)
+        ReenableAutoLightsForPad(iPad);
+}
+
+void SMXManager::ReenableAutoLightsForPad(int iPad)
+{
+    if(iPad < 0 || iPad >= 2)
+        return;
+
+    lock_guard<recursive_mutex> lock(m_Lock);
+
+    // Drop this pad's share of every queued lights frame. A frame already pending would
+    // otherwise land after the "S 1" below and immediately re-disable auto-lighting. The
+    // other pad's share of those same frames is preserved, so its animation neither
+    // stalls nor skips.
+    for(PendingLightsCommand &cmd : m_aPendingLightsCommands)
+        cmd.sPadCommand[iPad].clear();
+
+    m_Devices[iPad].SendCommand("S 1\n");
 }
 
 void SMXManager::SetPlatformLights(const char *pLightData)
@@ -153,6 +170,12 @@ static const ColorScaleTable g_ColorScale;
 
 void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 {
+    const bool bothPads[2] = { true, true };
+    SetLightsForPads(pLightData, iLightDataSize, bothPads);
+}
+
+void SMXManager::SetLightsForPads(const char *pLightData, int iLightDataSize, const bool pads[2])
+{
     lock_guard<recursive_mutex> lock(m_Lock);
 
     // Don't send lights when a panel test mode is active.
@@ -173,6 +196,12 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 
     for(int iPad = 0; iPad < 2; ++iPad)
     {
+        // A deselected pad builds no commands. Its strings stay empty, which the queueing
+        // below and SendPendingLightsCommands both read as "skip this pad", so nothing
+        // reaches it and its firmware auto-lighting resumes.
+        if(!pads[iPad])
+            continue;
+
         const char *pPadData = pLightData + iPad * iBytesPerPad;
 
         // Reserve known final sizes to avoid reallocations.
@@ -281,6 +310,17 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
         // Replace data in the last 3 pending commands.
         for(int iPad = 0; iPad < 2; ++iPad)
         {
+            // A deselected pad must have its share of the reused frame cleared, not just
+            // skipped: leaving the previous frame's strings in place would keep sending
+            // to a pad we are handing back to its firmware.
+            if(!pads[iPad])
+            {
+                size_t iBase = m_aPendingLightsCommands.size() - 3;
+                for(int i = 0; i < 3; ++i)
+                    m_aPendingLightsCommands[iBase + i].sPadCommand[iPad].clear();
+                continue;
+            }
+
             if(sLightCommands[0][iPad].empty())
                 continue;
 
