@@ -198,6 +198,14 @@ bool SMXDevice::HasUnsentLights() const
     return m_Connection.IsConnected() && m_Connection.HasUnsentLights();
 }
 
+void SMXDevice::DropQueuedLights()
+{
+    lock_guard<recursive_mutex> lock(*m_pLock);
+    if(!m_Connection.IsConnected())
+        return;
+    m_Connection.DropQueuedLights();
+}
+
 double SMXDevice::NextSensorRequestInSecs() const
 {
     lock_guard<recursive_mutex> lock(*m_pLock);

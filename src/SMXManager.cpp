@@ -137,6 +137,11 @@ void SMXManager::ReenableAutoLightsForPad(int iPad)
     for(PendingLightsCommand &cmd : m_aPendingLightsCommands)
         cmd.sPadCommand[iPad].clear();
 
+    // The main thread loop can have already moved a frame out of the staging list above
+    // and into this pad's own connection queue before we got the lock; clear it there too,
+    // or a queued frame still lands and immediately re-disables the lighting we're enabling.
+    m_Devices[iPad].DropQueuedLights();
+
     m_Devices[iPad].SendCommand("S 1\n");
 }
 

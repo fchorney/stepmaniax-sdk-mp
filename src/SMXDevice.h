@@ -114,6 +114,9 @@ public:
     /// True if an un-sent light frame is still queued on this device.
     bool HasUnsentLights() const;
 
+    /// Drops any not-yet-dispatched panel-lights commands queued on this device.
+    void DropQueuedLights();
+
     /// Seconds until the next sensor-test request is due (for precise main-loop
     /// wake timing), or a negative value if no request is pending.
     double NextSensorRequestInSecs() const;
