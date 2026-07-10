@@ -61,7 +61,10 @@ public:
     /// here (never rebound): it forwards to the slot-independent update callback,
     /// tagging each report with the pad index the poll thread reads from the
     /// connection's shared atomic, which SetPadIndex updates on a swap.
-    std::unique_ptr<SMXPollHandle> OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice)
+    /// @param writeDoneNotify Called by the writer thread once a command's packets are
+    ///        on the wire, so the manager wakes rather than sleeping out its loop interval.
+    std::unique_ptr<SMXPollHandle> OpenDevice(const std::string &sPath, std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice,
+        std::function<void()> writeDoneNotify = nullptr)
     {
         auto cb = m_pUpdateCallback;
         return m_Connection.Open(sPath, std::move(pReadDevice), std::move(pWriteDevice),
@@ -69,7 +72,7 @@ public:
                 if(cb)
                     cb(pad, static_cast<SMXUpdateCallbackReason>(SMXUpdateCallback_Updated | SMXUpdateCallback_InputState));
             },
-            m_iPadIndex);
+            m_iPadIndex, std::move(writeDoneNotify));
     }
 
     void CloseDevice();

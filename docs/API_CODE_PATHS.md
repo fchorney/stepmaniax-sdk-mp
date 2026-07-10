@@ -44,8 +44,8 @@ This document traces the execution path of each public `SMX_*` API function thro
 │                     SMXDeviceConnection                                  │
 │                                                                         │
 │   - Owns TWO IHIDDevice handles to the same device:                     │
-│       read handle  (PollUSBData, USB polling thread)                    │
-│       write handle (CheckWrites, main I/O thread)                       │
+│       read handle  (PollUSBData, per-pad poll thread)                   │
+│       write handle (SMXWriteHandle, per-connection writer thread)       │
 │   - Command queue (fragment, send, await response)                      │
 │   - Report 6 buffer (USB thread → main thread handoff)                  │
 │   - Atomic m_iInputState (USB thread writes, anyone reads)              │
@@ -94,9 +94,12 @@ This document traces the execution path of each public `SMX_*` API function thro
 Input reads must never wait behind a blocking USB write. Two design choices keep
 them independent:
 
-- **Separate read/write HID handles.** Each `SMXDeviceConnection` opens the
-  device path twice: a *read handle* used only by `PollUSBData` (USB polling
-  thread) and a *write handle* used only by `CheckWrites` (main I/O thread).
+- **Separate read/write HID handles, each on its own thread.** Each
+  `SMXDeviceConnection` opens the device path twice: a *read handle* used only by
+  `PollUSBData` (per-pad poll thread) and a *write handle* owned by
+  `SMXWriteHandle` (per-connection writer thread). `CheckWrites` only queues a
+  command's packets to the writer, so neither the main I/O thread nor the manager
+  lock it holds ever blocks on the wire.
   Because they are independent OS handles, a read and a write can run at the same
   time without serializing on one handle. (macOS opens IOHIDDevice exclusively by
   default, so the SDK calls `hid_darwin_set_open_exclusive(0)` to allow the second

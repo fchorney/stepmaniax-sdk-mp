@@ -426,3 +426,120 @@ TEST_CASE("SMX_SetLights2 rate limits to 30 FPS") {
 
     SMX_Stop();
 }
+
+// ─── Per-pad lights ownership ────────────────────────────────────────────────
+
+namespace {
+
+// Count the lights commands ('4', '2', '3') a fake device received.
+static int LightsCommandCount(FakeDevice *pDevice)
+{
+    int iCount = 0;
+    for(const auto &w : pDevice->GetCapturedWrites())
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1)
+        {
+            char cmd = static_cast<char>(w[3]);
+            if(cmd == '4' || cmd == '2' || cmd == '3')
+                iCount++;
+        }
+    }
+    return iCount;
+}
+
+// Whether a fake device received the "S 1" re-enable-auto-lights command.
+static bool SawAutoLightsCommand(FakeDevice *pDevice)
+{
+    for(const auto &w : pDevice->GetCapturedWrites())
+    {
+        if(w.size() >= 4 && w[0] == HID_REPORT_COMMAND &&
+           (w[1] & PACKET_FLAG_START_OF_COMMAND) && w[2] >= 1 &&
+           static_cast<char>(w[3]) == 'S')
+            return true;
+    }
+    return false;
+}
+
+// Bring up two connected v5 pads with write capture on.
+struct TwoPads {
+    FakeDevice *p0;
+    FakeDevice *p1;
+};
+
+static TwoPads StartTwoPads()
+{
+    auto pFakeDevice0 = new FakeDevice();
+    auto pFakeDevice1 = new FakeDevice();
+    auto pEnum = new FakeHIDEnumerator();
+    pEnum->AddDevice("/dev/hidraw0", pFakeDevice0);
+    pEnum->AddDevice("/dev/hidraw1", pFakeDevice1);
+
+    SMXConfig cfg = {};
+    cfg.masterVersion = 5;
+    pFakeDevice0->QueueRead(MakeDeviceInfoResponse('0', 5));
+    pFakeDevice0->SetConfigResponsePackets(MakeFullConfigResponsePackets(cfg));
+    pFakeDevice0->SetCaptureWrites(true);
+
+    pFakeDevice1->QueueRead(MakeDeviceInfoResponse('1', 5));
+    pFakeDevice1->SetConfigResponsePackets(MakeFullConfigResponsePackets(cfg));
+    pFakeDevice1->SetCaptureWrites(true);
+
+    SMX_StartWithEnumerator([](int, SMXUpdateCallbackReason, void*){},
+                            nullptr, unique_ptr<IHIDEnumerator>(pEnum));
+
+    REQUIRE(WaitFor([&]() {
+        SMXInfo info0 = {}, info1 = {};
+        SMX_GetInfo(0, &info0);
+        SMX_GetInfo(1, &info1);
+        return info0.m_bConnected && info1.m_bConnected;
+    }));
+
+    pFakeDevice0->ClearCapturedWrites();
+    pFakeDevice1->ClearCapturedWrites();
+    return TwoPads{pFakeDevice0, pFakeDevice1};
+}
+
+} // anonymous namespace
+
+TEST_CASE("SMX_SetLights2ForPads skips the deselected pad") {
+    TwoPads pads = StartTwoPads();
+
+    vector<char> lightData(1350, (char)100);
+    const bool selected[2] = { true, false };
+    SMX_SetLights2ForPads(lightData.data(), 1350, selected);
+
+    CHECK(WaitFor([&]() { return LightsCommandCount(pads.p0) >= 3; }));
+
+    // The deselected pad must receive no lights command at all, so that its firmware
+    // auto-lighting resumes rather than being held black.
+    CHECK(LightsCommandCount(pads.p1) == 0);
+
+    SMX_Stop();
+}
+
+TEST_CASE("SMX_ReenableAutoLightsForPad leaves the other pad lit") {
+    TwoPads pads = StartTwoPads();
+
+    SMX_ReenableAutoLightsForPad(1);
+
+    CHECK(WaitFor([&]() { return SawAutoLightsCommand(pads.p1); }));
+    CHECK_FALSE(SawAutoLightsCommand(pads.p0));
+
+    SMX_Stop();
+}
+
+// A frame queued before the release must not land afterwards and re-disable the
+// auto-lighting; the other pad's share of that same frame must survive.
+TEST_CASE("SMX_ReenableAutoLightsForPad drops only that pad's queued frame") {
+    TwoPads pads = StartTwoPads();
+
+    vector<char> lightData(1350, (char)100);
+    SMX_SetLights2(lightData.data(), 1350);
+    SMX_ReenableAutoLightsForPad(1);
+
+    CHECK(WaitFor([&]() { return LightsCommandCount(pads.p0) >= 3; }));
+    CHECK(LightsCommandCount(pads.p1) == 0);
+
+    SMX_Stop();
+}

@@ -77,6 +77,14 @@ SMXManager::~SMXManager()
     // and join the per-pad poll threads (each returns within one read timeout).
     for(int i = 0; i < 2; i++)
         StopAndJoinPollThread(i);
+
+    // Close the devices here rather than leaving it to member destruction. Closing joins
+    // each connection's writer thread, and those threads call a write-done callback that
+    // captures this manager (it notifies m_Cond). Joining them inside the destructor body
+    // guarantees none is running by the time any member is destroyed.
+    for(auto &device : m_Devices)
+        device.CloseDevice();
+
     m_pEnumerator->Exit();
 }
 
@@ -111,8 +119,25 @@ void SMXManager::SetMainThreadSleepMs(int iMainThreadMs)
 void SMXManager::ReenableAutoLights()
 {
     lock_guard<recursive_mutex> lock(m_Lock);
-    for(auto &device : m_Devices)
-        device.SendCommand("S 1\n");
+    for(int iPad = 0; iPad < 2; ++iPad)
+        ReenableAutoLightsForPad(iPad);
+}
+
+void SMXManager::ReenableAutoLightsForPad(int iPad)
+{
+    if(iPad < 0 || iPad >= 2)
+        return;
+
+    lock_guard<recursive_mutex> lock(m_Lock);
+
+    // Drop this pad's share of every queued lights frame. A frame already pending would
+    // otherwise land after the "S 1" below and immediately re-disable auto-lighting. The
+    // other pad's share of those same frames is preserved, so its animation neither
+    // stalls nor skips.
+    for(PendingLightsCommand &cmd : m_aPendingLightsCommands)
+        cmd.sPadCommand[iPad].clear();
+
+    m_Devices[iPad].SendCommand("S 1\n");
 }
 
 void SMXManager::SetPlatformLights(const char *pLightData)
@@ -153,6 +178,12 @@ static const ColorScaleTable g_ColorScale;
 
 void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 {
+    const bool bothPads[2] = { true, true };
+    SetLightsForPads(pLightData, iLightDataSize, bothPads);
+}
+
+void SMXManager::SetLightsForPads(const char *pLightData, int iLightDataSize, const bool pads[2])
+{
     lock_guard<recursive_mutex> lock(m_Lock);
 
     // Don't send lights when a panel test mode is active.
@@ -173,6 +204,12 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
 
     for(int iPad = 0; iPad < 2; ++iPad)
     {
+        // A deselected pad builds no commands. Its strings stay empty, which the queueing
+        // below and SendPendingLightsCommands both read as "skip this pad", so nothing
+        // reaches it and its firmware auto-lighting resumes.
+        if(!pads[iPad])
+            continue;
+
         const char *pPadData = pLightData + iPad * iBytesPerPad;
 
         // Reserve known final sizes to avoid reallocations.
@@ -281,6 +318,17 @@ void SMXManager::SetLights(const char *pLightData, int iLightDataSize)
         // Replace data in the last 3 pending commands.
         for(int iPad = 0; iPad < 2; ++iPad)
         {
+            // A deselected pad must have its share of the reused frame cleared, not just
+            // skipped: leaving the previous frame's strings in place would keep sending
+            // to a pad we are handing back to its firmware.
+            if(!pads[iPad])
+            {
+                size_t iBase = m_aPendingLightsCommands.size() - 3;
+                for(int i = 0; i < 3; ++i)
+                    m_aPendingLightsCommands[iBase + i].sPadCommand[iPad].clear();
+                continue;
+            }
+
             if(sLightCommands[0][iPad].empty())
                 continue;
 
@@ -573,7 +621,14 @@ void SMXManager::AttemptConnections()
         // own poll thread. The slot was empty (its prior thread, if any, was
         // reaped on close), so there is nothing to stop first.
         const int slot = static_cast<int>(pSlot - &m_Devices[0]);
-        if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice)))
+        // Wake the main loop the moment a command's packets are on the wire, so the next
+        // command (lights stream pacing) isn't left waiting out the loop interval.
+        // Capturing `this` is safe: ~SMXManager closes every device, which joins the
+        // writer threads, before m_Cond is destroyed.
+        auto writeDoneNotify = [this]() { m_Cond.notify_all(); };
+
+        if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice),
+                                          writeDoneNotify))
         {
             // The shared state was just created with change-only as the default;
             // re-apply the remembered all-packets mode before the poll thread

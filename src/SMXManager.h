@@ -67,10 +67,29 @@ public:
     /// blocks on the device and wakes the instant a report arrives.
     void SetMainThreadSleepMs(int iMainThreadMs);
     void ReenableAutoLights();
+
+    /// Re-enables automatic panel lighting on a single pad, leaving the other pad's
+    /// lighting (and any frame queued for it) untouched. Drops this pad's share of every
+    /// queued lights frame first: a frame already pending would otherwise land after the
+    /// command below and immediately re-disable the auto-lighting we just asked for.
+    void ReenableAutoLightsForPad(int iPad);
+
     void SetPlatformLights(const char *pLightData);
 
     /// Sets panel LED colors for both pads. Data is split per-pad internally.
     void SetLights(const char *pLightData, int iLightDataSize);
+
+    /// Sets panel LED colors for the pads selected by pads[].
+    ///
+    /// pLightData always covers both pads (the same layout SetLights takes); a pad whose
+    /// entry in pads[] is false has its slice ignored and receives no lights command at
+    /// all. Because a pad returns to its firmware auto-lighting once it stops receiving
+    /// lights commands, deselecting a pad hands its LEDs back rather than lighting it
+    /// black. Use ReenableAutoLightsForPad to skip the firmware's timeout.
+    ///
+    /// Both pads' commands are still queued together, so a frame sent to one pad never
+    /// drifts out of phase with the other's.
+    void SetLightsForPads(const char *pLightData, int iLightDataSize, const bool pads[2]);
 
     void SetPanelTestMode(PanelTestMode mode);
     void SetInputStateMode(bool bAlwaysFire);

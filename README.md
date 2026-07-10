@@ -58,11 +58,11 @@ All features from the original StepManiaX SDK have been implemented, plus severa
 | SDK version | `SMX_Version` | Returns version string (e.g. "1.0.0") |
 | Factory reset | `SMX_FactoryReset` | Reset pad to default configuration |
 | Force recalibration | `SMX_ForceRecalibration` | Trigger immediate sensor recalibration |
-| Re-enable auto lights | `SMX_ReenableAutoLights` | Return panels to automatic step lighting |
+| Re-enable auto lights | `SMX_ReenableAutoLights`, `SMX_ReenableAutoLightsForPad` | Return panels to automatic step lighting, on both pads or one |
 | Panel test mode | `SMX_SetPanelTestMode` | Panel-side diagnostic lighting (pressure test) |
 | Get/set configuration | `SMX_GetConfig`, `SMX_SetConfig` | Read/write thresholds, lighting, sensor settings |
 | Sensor test mode | `SMX_SetTestMode`, `SMX_GetTestData` | Read raw/calibrated sensor values for diagnostics |
-| Panel LED control | `SMX_SetLights2` | Set RGB colors for all panel LEDs (up to 30 FPS) |
+| Panel LED control | `SMX_SetLights2`, `SMX_SetLights2ForPads` | Set RGB colors for all panel LEDs (up to 30 FPS), on both pads or a chosen subset |
 | Platform LED strip | `SMX_SetPlatformLights` | Control platform edge LED strip (firmware v4+) |
 | GIF animation playback | `SMX_LightsAnimation_Load`, `SMX_LightsAnimation_SetAuto` | Load and auto-play GIF animations on panels |
 | Animation upload | `SMX_LightsUpload_PrepareUpload`, `SMX_LightsUpload_BeginUpload` | Upload animations to firmware EEPROM |
@@ -369,9 +369,11 @@ void SMX_SetSerialNumbers();
 void SMX_FactoryReset(int pad);
 void SMX_ForceRecalibration(int pad);
 void SMX_ReenableAutoLights();
+void SMX_ReenableAutoLightsForPad(int pad);
 
 // Lighting
 void SMX_SetLights2(const char *lightData, int lightDataSize);
+void SMX_SetLights2ForPads(const char *lightData, int lightDataSize, const bool pads[2]);
 void SMX_SetLights(const char lightData[864]);  // deprecated, use SetLights2
 void SMX_SetPlatformLights(const char *pLightData);
 
@@ -433,6 +435,22 @@ for (int led = 0; led < 16; led++) {
 }
 
 SMX_SetLights2(lights, 1350);
+```
+
+### Driving one pad and leaving the other to its firmware
+
+`SMX_SetLights2ForPads` takes a per-pad selector. The buffer still covers both pads; a
+deselected pad receives no lights command, so its firmware auto-lighting resumes (a pad
+reverts once lights stop arriving). Both pads' commands are queued together either way, so
+the two never drift out of phase: driving one pad does not disturb the other's timing.
+
+```c
+// Light P1, hand P2 back to its firmware.
+const bool pads[2] = { true, false };
+SMX_SetLights2ForPads(lights, 1350, pads);
+
+// Release a single pad now, instead of waiting out the firmware's timeout.
+SMX_ReenableAutoLightsForPad(1);
 ```
 
 ### Reading and modifying configuration

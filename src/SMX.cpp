@@ -119,18 +119,29 @@ SMX_API void SMX_ReenableAutoLights()
     if(g_pSMX) g_pSMX->ReenableAutoLights();
 }
 
+SMX_API void SMX_ReenableAutoLightsForPad(int pad)
+{
+    if(g_pSMX) g_pSMX->ReenableAutoLightsForPad(pad);
+}
+
 SMX_API void SMX_SetLights2(const char *lightData, int lightDataSize)
 {
-    if(!g_pSMX || !lightData) return;
+    const bool bothPads[2] = { true, true };
+    SMX_SetLights2ForPads(lightData, lightDataSize, bothPads);
+}
+
+SMX_API void SMX_SetLights2ForPads(const char *lightData, int lightDataSize, const bool pads[2])
+{
+    if(!g_pSMX || !lightData || !pads) return;
 
     if(lightDataSize != 2*BYTES_PER_PAD_16 && lightDataSize != 2*BYTES_PER_PAD_25)
     {
-        Log(ssprintf("SMX_SetLights2: lightDataSize must be %i or %i, got %i",
+        Log(ssprintf("SMX_SetLights2ForPads: lightDataSize must be %i or %i, got %i",
             2*BYTES_PER_PAD_16, 2*BYTES_PER_PAD_25, lightDataSize));
         return;
     }
 
-    g_pSMX->SetLights(lightData, lightDataSize);
+    g_pSMX->SetLightsForPads(lightData, lightDataSize, pads);
 
     // Pause auto-animation briefly so it doesn't compete with direct lights control.
     SMXLightsAnimation_TemporaryStop();

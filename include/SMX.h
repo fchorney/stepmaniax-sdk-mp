@@ -304,7 +304,32 @@ SMX_API void SMX_ForceRecalibration(int pad);
 /// without waiting for the timeout period to elapse.
 SMX_API void SMX_ReenableAutoLights();
 
+/// Re-enables automatic panel lighting on a single pad, leaving the other pad's lighting
+/// (and any frame queued for it) untouched. Use with SMX_SetLights2ForPads to drive one
+/// pad while the other keeps its firmware lighting.
+///
+/// @param pad Device index (0 for Player 1, 1 for Player 2).
+SMX_API void SMX_ReenableAutoLightsForPad(int pad);
+
+/// Update panel LEDs on the pads selected by pads[].
+///
+/// lightData always covers both pads, exactly as SMX_SetLights2 expects it. A pad whose
+/// entry in pads[] is false has its slice ignored and receives no lights command at all.
+/// Since a pad returns to its firmware auto-lighting once lights commands stop arriving,
+/// deselecting a pad hands its LEDs back rather than lighting it black. Call
+/// SMX_ReenableAutoLightsForPad to release it immediately instead of waiting out the
+/// firmware's timeout.
+///
+/// Both pads' commands are still queued together, so a pad driven alongside another never
+/// drifts out of phase with it.
+///
+/// @param lightData Pointer to the RGB light data buffer, covering both pads.
+/// @param lightDataSize Size of the buffer in bytes (must be 1350 or 864).
+/// @param pads Which pads to update; pads[0] is Player 1, pads[1] is Player 2.
+SMX_API void SMX_SetLights2ForPads(const char *lightData, int lightDataSize, const bool pads[2]);
+
 /// Update panel LEDs on both pads. Both pads are always updated together.
+/// (See SMX_SetLights2ForPads to drive one pad and leave the other to its firmware.)
 ///
 /// lightData is a flat array of 8-bit RGB colors, one for each LED on each panel.
 /// lightDataSize must be either:
