@@ -316,6 +316,14 @@ public:
     /// already in flight). Used to avoid piling new light frames onto the queue.
     bool HasUnsentLights() const;
 
+    /// Drops any not-yet-dispatched panel-lights commands from the queue. A frame
+    /// can already have been moved out of the manager's staging list and into this
+    /// connection's own queue before a caller clears its share there, so re-enabling
+    /// auto lights for this pad must also purge them here or a queued frame can still
+    /// land and immediately re-disable the lighting. A command already handed to the
+    /// writer thread (in flight) can't be recalled; that residual window is negligible.
+    void DropQueuedLights();
+
     /// Retrieves the current input state (pressed panels) bitmask.
     uint16_t GetInputState() const { return m_pShared ? m_pShared->m_iInputState.load() : 0; }
 

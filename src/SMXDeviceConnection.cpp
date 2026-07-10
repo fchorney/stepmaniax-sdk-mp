@@ -539,6 +539,17 @@ bool SMXDeviceConnection::HasUnsentLights() const
     return false;
 }
 
+void SMXDeviceConnection::DropQueuedLights()
+{
+    for(auto it = m_aPendingCommands.begin(); it != m_aPendingCommands.end(); )
+    {
+        if((*it)->m_bIsLights)
+            it = m_aPendingCommands.erase(it);
+        else
+            ++it;
+    }
+}
+
 /// Polls for USB data on the per-pad poll thread (read side).
 ///
 /// The first read blocks up to iFirstReadTimeoutMs (interrupt-driven: the kernel
