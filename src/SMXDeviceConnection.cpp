@@ -2,7 +2,9 @@
 #include "SMX.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <thread>
 #include <utility>
 
 // Declared in SMXHelpers.h
@@ -38,11 +40,102 @@ SMXDeviceConnection::SMXDeviceConnection() = default;
 
 SMXDeviceConnection::~SMXDeviceConnection() { Close(); }
 
+// ─── SMXWriteHandle (USB writer thread) ──────────────────────────────────────
+
+SMXWriteHandle::SMXWriteHandle(unique_ptr<IHIDDevice> pWriteDevice,
+    shared_ptr<SMXConnectionShared> pShared, function<void()> writeDoneNotify):
+    m_pWriteDevice(std::move(pWriteDevice)),
+    m_pShared(std::move(pShared)),
+    m_WriteDoneNotify(std::move(writeDoneNotify))
+{
+    m_Thread = std::thread([this]() { ThreadMain(); });
+}
+
+SMXWriteHandle::~SMXWriteHandle()
+{
+    {
+        lock_guard<mutex> lock(m_Mutex);
+        m_bStop = true;
+    }
+    m_Cond.notify_all();
+    if(m_Thread.joinable())
+        m_Thread.join();
+
+    if(m_pWriteDevice)
+        m_pWriteDevice->Close();
+}
+
+bool SMXWriteHandle::Submit(string sPackets)
+{
+    {
+        lock_guard<mutex> lock(m_Mutex);
+        if(m_bStop)
+            return false;
+        m_Queue.push_back(std::move(sPackets));
+    }
+    m_Cond.notify_one();
+    return true;
+}
+
+/// Writer thread body: blocking HID writes for one command at a time.
+void SMXWriteHandle::ThreadMain()
+{
+    for(;;)
+    {
+        string sPackets;
+        {
+            unique_lock<mutex> lock(m_Mutex);
+            m_Cond.wait(lock, [this]() { return m_bStop || !m_Queue.empty(); });
+
+            // On shutdown, drop anything still queued rather than writing it out: the
+            // destructor is waiting on this join, and the device is going away anyway.
+            if(m_bStop)
+                break;
+
+            sPackets = std::move(m_Queue.front());
+            m_Queue.pop_front();
+        }
+
+        // Write this command's HID packets sequentially. Never holds m_Mutex, so Submit
+        // from the main thread never blocks behind the wire.
+        bool bFailed = false;
+        for(size_t offset = 0; offset < sPackets.size(); offset += HID_PACKET_SIZE)
+        {
+            const size_t len = min(HID_PACKET_SIZE, sPackets.size() - offset);
+            const int res = m_pWriteDevice->Write(
+                reinterpret_cast<const uint8_t*>(sPackets.data()) + offset, len);
+            if(res < 0)
+            {
+                bFailed = true;
+                break;
+            }
+        }
+
+        if(bFailed)
+            m_pShared->m_bHadWriteError.store(true, std::memory_order_release);
+
+        // Release the in-flight gate before notifying, so a woken main thread sees the
+        // command as drained and can promote it to sent (starting its response timeout).
+        m_pShared->m_bWriteInFlight.store(false, std::memory_order_release);
+        if(m_WriteDoneNotify)
+            m_WriteDoneNotify();
+
+        // A write error is terminal: the main thread turns m_bHadWriteError into a
+        // disconnect on its next Update().
+        if(bFailed)
+            return;
+    }
+
+    // Stopped with a command possibly still handed to us: clear the gate so nothing
+    // waits on a write that will never happen.
+    m_pShared->m_bWriteInFlight.store(false, std::memory_order_release);
+}
+
 /// Move constructor transfers the HID connection and all pending I/O state from another instance.
-/// The source object is left in a disconnected state (m_pDevice set to nullptr).
+/// The source object is left in a disconnected state (m_pWriter set to nullptr).
 SMXDeviceConnection::SMXDeviceConnection(SMXDeviceConnection &&other) noexcept:
     m_pShared(std::move(other.m_pShared)),
-    m_pWriteDevice(std::move(other.m_pWriteDevice)),
+    m_pWriter(std::move(other.m_pWriter)),
     m_sPath(std::move(other.m_sPath)),
     m_bActive(other.m_bActive),
     m_bGotInfo(other.m_bGotInfo),
@@ -62,7 +155,7 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
     {
         Close();
         m_pShared = std::move(other.m_pShared);
-        m_pWriteDevice = std::move(other.m_pWriteDevice);
+        m_pWriter = std::move(other.m_pWriter);
         m_sPath = std::move(other.m_sPath);
         m_bActive = other.m_bActive;
         m_bGotInfo = other.m_bGotInfo;
@@ -80,7 +173,7 @@ SMXDeviceConnection &SMXDeviceConnection::operator=(SMXDeviceConnection &&other)
 /// The device is considered fully connected once device info is received (see IsConnectedWithDeviceInfo).
 unique_ptr<SMXPollHandle> SMXDeviceConnection::Open(const string &sPath,
     unique_ptr<IHIDDevice> pReadDevice, unique_ptr<IHIDDevice> pWriteDevice,
-    function<void(int)> inputChangedCb, int iPadIndex)
+    function<void(int)> inputChangedCb, int iPadIndex, function<void()> writeDoneNotify)
 {
     // Fresh cross-thread state for this connection. The poll handle below shares
     // it; both go away when the connection closes and the poll thread is reaped.
@@ -88,7 +181,10 @@ unique_ptr<SMXPollHandle> SMXDeviceConnection::Open(const string &sPath,
     m_pShared->m_iPadIndex.store(iPadIndex, std::memory_order_relaxed);
     m_pShared->m_pInputStateChangedCallback = std::move(inputChangedCb);
 
-    m_pWriteDevice = std::move(pWriteDevice);
+    // The writer thread takes ownership of the write handle and performs every blocking
+    // write, so this thread (and the manager lock it runs under) never waits on the wire.
+    m_pWriter = make_unique<SMXWriteHandle>(std::move(pWriteDevice), m_pShared,
+        std::move(writeDoneNotify));
     m_sPath = sPath;
 
     // Request device info. The response is handled in HandleUsbPacket which
@@ -102,7 +198,7 @@ unique_ptr<SMXPollHandle> SMXDeviceConnection::Open(const string &sPath,
 /// Invokes any pending command completion callbacks with empty strings to indicate cancellation.
 void SMXDeviceConnection::Close()
 {
-    if(!m_pWriteDevice && !m_pShared)
+    if(!m_pWriter && !m_pShared)
         return;
 
     Log("Closing device");
@@ -116,9 +212,8 @@ void SMXDeviceConnection::Close()
             cmd->m_pComplete("");
     }
 
-    if(m_pWriteDevice)
-        m_pWriteDevice->Close();
-    m_pWriteDevice.reset();
+    // Stops and joins the writer thread, then closes the write handle it owns.
+    m_pWriter.reset();
     // The read handle lives in the poll handle on the per-pad poll thread, which
     // the manager stops and joins before closing the device. Dropping our
     // shared_ptr (the poll handle's is already gone) releases the shared state,
@@ -138,7 +233,7 @@ void SMXDeviceConnection::Close()
 /// Handles reads and writes in sequence, returning errors if either operation fails.
 void SMXDeviceConnection::Update(string &sError)
 {
-    if(!m_pWriteDevice)
+    if(!m_pWriter)
     {
         sError = "Device not open";
         return;
@@ -149,6 +244,14 @@ void SMXDeviceConnection::Update(string &sError)
     if(m_pShared && m_pShared->m_bHadReadError.load(std::memory_order_relaxed))
     {
         sError = "Error reading from device";
+        return;
+    }
+
+    // Same for a writer-thread error: the write already failed on its own thread, and
+    // surfaces here as a disconnect.
+    if(m_pShared && m_pShared->m_bHadWriteError.load(std::memory_order_relaxed))
+    {
+        sError = "Error writing to device";
         return;
     }
 
@@ -294,9 +397,22 @@ void SMXDeviceConnection::HandleUsbPacket(const char *pData, size_t iLen)
 /// and up to 61 bytes of command payload. Sets command timing information for timeout detection.
 void SMXDeviceConnection::CheckWrites(string &sError)
 {
-    // If a command is already in flight, wait for response before sending next.
+    // If a command is already in flight, wait for its response before sending the next.
     if(m_pCurrentCommand)
+    {
+        // Promote it to sent once the writer thread has all its packets on the wire; the
+        // response timeout starts from there rather than from the handoff. If a response
+        // beats this promotion (the poll thread can deliver it before our next pass), the
+        // command completes with m_bSent still false, which is fine: m_bSent only gates
+        // the timeout retry.
+        if(!m_pCurrentCommand->m_bSent && m_pShared &&
+           !m_pShared->m_bWriteInFlight.load(std::memory_order_acquire))
+        {
+            m_pCurrentCommand->m_bSent = true;
+            m_pCurrentCommand->m_fSentAt = GetMonotonicTime();
+        }
         return;
+    }
 
     // If no pending commands, nothing to do.
     if(m_aPendingCommands.empty())
@@ -305,25 +421,35 @@ void SMXDeviceConnection::CheckWrites(string &sError)
     auto pCmd = std::move(m_aPendingCommands.front());
     m_aPendingCommands.pop_front();
 
-    // Send all HID packets for this command sequentially.
-    const string &sData = pCmd->sData;
-    for(size_t offset = 0; offset < sData.size(); offset += HID_PACKET_SIZE)
+    // Hand this command's packets to the writer thread and keep it as the in-flight one.
+    // sData stays in the command, so a timeout retry can re-hand it later. A refused
+    // handoff means the writer stopped (write error or shutdown): surface the disconnect.
+    m_pShared->m_bWriteInFlight.store(true, std::memory_order_release);
+    if(!m_pWriter || !m_pWriter->Submit(pCmd->sData))
     {
-        const size_t len = min(HID_PACKET_SIZE, sData.size() - offset);
-        const int res = m_pWriteDevice->Write(reinterpret_cast<const uint8_t*>(sData.data()) + offset, len);
-        if(res < 0)
-        {
-            sError = "Error writing to device";
-            if(pCmd->m_pComplete)
-                pCmd->m_pComplete("");
-            return;
-        }
+        m_pShared->m_bWriteInFlight.store(false, std::memory_order_release);
+        sError = "Error writing to device";
+        if(pCmd->m_pComplete)
+            pCmd->m_pComplete("");
+        return;
     }
 
-    // Mark command as sent and start timeout timer.
-    pCmd->m_bSent = true;
-    pCmd->m_fSentAt = GetMonotonicTime();
     m_pCurrentCommand = std::move(pCmd);
+}
+
+bool SMXDeviceConnection::WaitWritesIdle(double fTimeoutSeconds) const
+{
+    if(!m_pShared)
+        return true;
+
+    const double fDeadline = GetMonotonicTime() + fTimeoutSeconds;
+    while(m_pShared->m_bWriteInFlight.load(std::memory_order_acquire))
+    {
+        if(GetMonotonicTime() >= fDeadline)
+            return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    return true;
 }
 
 /// Sends a device info request to the device asynchronously.

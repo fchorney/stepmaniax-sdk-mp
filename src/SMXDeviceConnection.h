@@ -2,11 +2,13 @@
 #define SMXDeviceConnection_h
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "SMXHIDInterface.h"
 
@@ -64,6 +66,15 @@ struct SMXConnectionShared
     /// Set when a read fails; the main thread polls this to close the device.
     std::atomic<bool> m_bHadReadError{false};
 
+    /// Set by the writer thread when a write fails; surfaced as a disconnect on the
+    /// next Update(), mirroring m_bHadReadError.
+    std::atomic<bool> m_bHadWriteError{false};
+
+    /// A command's packets have been handed to the writer thread and are not fully on
+    /// the wire yet. While set, the command stays un-sent (its response timeout hasn't
+    /// started) and WaitWritesIdle blocks.
+    std::atomic<bool> m_bWriteInFlight{false};
+
     /// Slot index the input callback reports. Updated on a pad swap (instead of
     /// rebinding the callback), so the poll thread reads it lock-free.
     std::atomic<int> m_iPadIndex{0};
@@ -103,6 +114,57 @@ private:
     std::shared_ptr<SMXConnectionShared> m_pShared;
 };
 
+/// Write side of a connection, owned by SMXDeviceConnection (mirrors the writer thread
+/// in the Rust SDK). Owns the write HID handle and performs the blocking writes on its
+/// own thread, so no caller ever blocks on the wire.
+///
+/// Write() to an interrupt OUT endpoint takes on the order of milliseconds per packet.
+/// Those writes used to run inside CheckWrites(), which the main I/O thread calls while
+/// holding the manager lock, so a streaming light frame held that lock in multi-millisecond
+/// bursts and stalled every GetInfo-style query on other threads. This is the write-side
+/// sibling of the read-side SMXPollHandle.
+///
+/// SMXDeviceConnection hands over at most one command's packets at a time (guarded by
+/// m_bWriteInFlight), preserving the one-command-in-flight pacing. A failed write sets
+/// m_bHadWriteError and stops the thread; the main thread turns that into a disconnect on
+/// its next Update(), exactly like a poll-thread read error.
+class SMXWriteHandle
+{
+public:
+    /// @param pWriteDevice Write handle, owned by this thread for its lifetime.
+    /// @param pShared Cross-thread state (write-error and in-flight flags).
+    /// @param writeDoneNotify Called after each command's packets reach the wire (and on
+    ///        a write error), so the manager can wake instead of sleeping out its loop
+    ///        interval. Must remain valid until this object is destroyed.
+    SMXWriteHandle(std::unique_ptr<IHIDDevice> pWriteDevice,
+        std::shared_ptr<SMXConnectionShared> pShared,
+        std::function<void()> writeDoneNotify);
+
+    /// Stops and joins the writer thread, then closes the write handle. Waits out at most
+    /// the packet the thread is mid-write on (a few ms); queued commands are discarded.
+    ~SMXWriteHandle();
+
+    SMXWriteHandle(const SMXWriteHandle &) = delete;
+    SMXWriteHandle &operator=(const SMXWriteHandle &) = delete;
+
+    /// Hand one command's pre-built HID packets to the writer thread.
+    /// @return False if the thread has stopped (write error or shutdown).
+    bool Submit(std::string sPackets);
+
+private:
+    void ThreadMain();
+
+    std::unique_ptr<IHIDDevice> m_pWriteDevice;   // Writes only (writer thread)
+    std::shared_ptr<SMXConnectionShared> m_pShared;
+    std::function<void()> m_WriteDoneNotify;
+
+    std::mutex m_Mutex;
+    std::condition_variable m_Cond;
+    std::deque<std::string> m_Queue;   // guarded by m_Mutex
+    bool m_bStop = false;              // guarded by m_Mutex
+    std::thread m_Thread;
+};
+
 /// Low-level USB communication abstraction for a single StepManiaX device.
 ///
 /// This class handles:
@@ -133,7 +195,9 @@ private:
 /// 2. SMXDeviceConnection (command side, main I/O thread, holds m_pLock):
 ///    - CheckReads() drains Report 6 from m_sReport6Buffer; handles fragmentation,
 ///      command callbacks, timeouts. Never touches Report 3 or m_iInputState.
-///    - Owns the write handle; queues and sends commands. See ThreadMain().
+///    - Queues commands. The blocking writes happen on the writer thread (see
+///      SMXWriteHandle), which owns the write handle, so neither this thread nor the
+///      manager lock it runs under ever waits on the wire.
 ///
 /// Cross-thread state lives in SMXConnectionShared (held by shared_ptr by both
 /// objects): m_iInputState / m_bHadReadError / m_iPadIndex (atomics),
@@ -177,24 +241,28 @@ public:
     /// returns the read-side poll handle for the manager to run on a poll thread.
     /// @param sPath HID device path string (stored for identification).
     /// @param pReadDevice Opened HID handle owned by the returned poll handle.
-    /// @param pWriteDevice Opened HID handle used only by CheckWrites (writes).
+    /// @param pWriteDevice Opened HID handle handed to the writer thread.
     /// @param inputChangedCb Fired from the poll thread on input change, with the
     ///        current pad index; installed once and never rebound.
     /// @param iPadIndex Initial slot index the input callback reports.
     /// @return The read-side poll handle on success, or null on failure.
+    /// @param writeDoneNotify Called by the writer thread after each command's packets
+    ///        reach the wire, so the manager wakes promptly instead of sleeping out its
+    ///        loop interval. Must outlive the connection.
     std::unique_ptr<SMXPollHandle> Open(const std::string &sPath,
         std::unique_ptr<IHIDDevice> pReadDevice, std::unique_ptr<IHIDDevice> pWriteDevice,
-        std::function<void(int pad)> inputChangedCb, int iPadIndex);
+        std::function<void(int pad)> inputChangedCb, int iPadIndex,
+        std::function<void()> writeDoneNotify = nullptr);
 
     /// Closes the connection and cancels all pending commands.
     /// Invokes completion callbacks with empty strings to notify of cancellation.
     void Close();
 
     /// Returns true if the HID connection is open (though device info may not be retrieved yet).
-    bool IsConnected() const { return m_pWriteDevice != nullptr; }
+    bool IsConnected() const { return m_pWriter != nullptr; }
 
     /// Returns true if the connection is open AND device info has been received.
-    bool IsConnectedWithDeviceInfo() const { return m_pWriteDevice != nullptr && m_bGotInfo; }
+    bool IsConnectedWithDeviceInfo() const { return m_pWriter != nullptr && m_bGotInfo; }
 
     /// Returns the HID device path.
     const std::string &GetPath() const { return m_sPath; }
@@ -259,6 +327,16 @@ public:
     /// The main thread checks this to trigger device disconnect.
     bool HasReadError() const { return m_pShared && m_pShared->m_bHadReadError.load(std::memory_order_relaxed); }
 
+    /// Returns true if the writer thread encountered a write error.
+    /// The main thread checks this to trigger device disconnect.
+    bool HasWriteError() const { return m_pShared && m_pShared->m_bHadWriteError.load(std::memory_order_relaxed); }
+
+    /// Blocks until the writer thread has no packets in flight, up to fTimeoutSeconds.
+    /// Returns false on timeout. Mainly a test aid: Update() now returns before the
+    /// packets are on the wire, so tests that assert on written data (or rely on a fake
+    /// device's write-triggered responses) settle through this.
+    bool WaitWritesIdle(double fTimeoutSeconds) const;
+
     /// Updates the slot index the input callback reports. Called on a pad swap so
     /// the running poll thread attributes input to the new slot without rebinding
     /// the callback. No-op before Open.
@@ -275,9 +353,10 @@ private:
     /// @param sError [out] Error message if a read fails.
     void CheckReads();
 
-    /// Sends the next pending command to the device if no command is currently in flight.
-    /// Breaks the command into 64-byte HID packets and sends them sequentially.
-    /// @param sError [out] Error message if a write fails.
+    /// Hands the next pending command's packets to the writer thread if none is in
+    /// flight, and promotes the in-flight command to "sent" once the writer drains it
+    /// (which is when its response timeout starts). Never blocks on the wire.
+    /// @param sError [out] Error message if the handoff fails.
     void CheckWrites(std::string &sError);
 
     /// Processes a single Report 6 USB packet received from the device.
@@ -292,9 +371,10 @@ private:
     // Open(), released by Close(); null while disconnected. The poll thread holds
     // its own shared_ptr to the same object, so it stays valid across a pad swap.
     std::shared_ptr<SMXConnectionShared> m_pShared;
-    // Write handle (main I/O thread only). The read handle lives in the poll
-    // handle, not here. Set by Open(), reset by Close().
-    std::unique_ptr<IHIDDevice> m_pWriteDevice;  // Writes only (main I/O thread)
+    // Writer thread, which owns the write handle. The read handle lives in the poll
+    // handle; neither lives here. Set by Open(), reset (joined) by Close(). CheckWrites
+    // only queues packets to it, so the main I/O thread never blocks on the wire.
+    std::unique_ptr<SMXWriteHandle> m_pWriter;
     std::string m_sPath;                    // HID device path for identification
     bool m_bActive = false;                 // True after activation command sent
     bool m_bGotInfo = false;                // True once device info response received

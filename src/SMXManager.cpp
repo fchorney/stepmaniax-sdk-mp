@@ -77,6 +77,14 @@ SMXManager::~SMXManager()
     // and join the per-pad poll threads (each returns within one read timeout).
     for(int i = 0; i < 2; i++)
         StopAndJoinPollThread(i);
+
+    // Close the devices here rather than leaving it to member destruction. Closing joins
+    // each connection's writer thread, and those threads call a write-done callback that
+    // captures this manager (it notifies m_Cond). Joining them inside the destructor body
+    // guarantees none is running by the time any member is destroyed.
+    for(auto &device : m_Devices)
+        device.CloseDevice();
+
     m_pEnumerator->Exit();
 }
 
@@ -613,7 +621,14 @@ void SMXManager::AttemptConnections()
         // own poll thread. The slot was empty (its prior thread, if any, was
         // reaped on close), so there is nothing to stop first.
         const int slot = static_cast<int>(pSlot - &m_Devices[0]);
-        if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice)))
+        // Wake the main loop the moment a command's packets are on the wire, so the next
+        // command (lights stream pacing) isn't left waiting out the loop interval.
+        // Capturing `this` is safe: ~SMXManager closes every device, which joins the
+        // writer threads, before m_Cond is destroyed.
+        auto writeDoneNotify = [this]() { m_Cond.notify_all(); };
+
+        if(auto pPoll = pSlot->OpenDevice(dev.sPath, std::move(pReadDevice), std::move(pWriteDevice),
+                                          writeDoneNotify))
         {
             // The shared state was just created with change-only as the default;
             // re-apply the remembered all-packets mode before the poll thread

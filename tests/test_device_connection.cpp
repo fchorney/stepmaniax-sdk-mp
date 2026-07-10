@@ -3,8 +3,11 @@
 #include "SMXDeviceConnection.h"
 #include "SMXHIDInterface.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <queue>
+#include <thread>
 #include <vector>
 
 using namespace std;
@@ -437,6 +440,10 @@ TEST_CASE("SendCommand writes fragmented HID packets") {
     string sError;
     conn.Update(sError);
 
+    // Update() only hands the packets to the writer thread; settle it before asserting
+    // on what actually reached the device.
+    REQUIRE(conn.WaitWritesIdle(2.0));
+
     // Should have written: device info request (from Open) + our command
     // Device info was already sent during handshake, so writes should include our command
     const auto &writes = pFake->GetWrites();
@@ -486,11 +493,13 @@ TEST_CASE("Commands are serialized - second waits for first") {
     conn.SendCommand("B", [&](string r) { sResp2 = r; });
 
     string sError;
-    conn.Update(sError);  // sends command A only
+    conn.Update(sError);  // hands command A to the writer thread
+    REQUIRE(conn.WaitWritesIdle(2.0));
 
     size_t writesAfterFirst = pFake->GetWrites().size();
 
-    conn.Update(sError);  // command A still in flight, B not sent yet
+    conn.Update(sError);  // command A still in flight, B not handed over yet
+    REQUIRE(conn.WaitWritesIdle(2.0));
     CHECK(pFake->GetWrites().size() == writesAfterFirst);
 
     // Complete command A
@@ -501,6 +510,7 @@ TEST_CASE("Commands are serialized - second waits for first") {
 
     // Now B should be sent
     conn.Update(sError);
+    REQUIRE(conn.WaitWritesIdle(2.0));
     CHECK(pFake->GetWrites().size() > writesAfterFirst);
 }
 
@@ -593,10 +603,22 @@ TEST_CASE("Write error invokes callback and reports error") {
     conn.SendCommand("X", [&](string r) { sResp = r; });
 
     sError.clear();
-    conn.Update(sError);  // tries to write command, fails
+    conn.Update(sError);  // hands the command to the writer thread
 
+    // The write now happens off-thread, so this Update() succeeds: the failure lands on
+    // the writer, which sets the write-error flag. Settle it, then the next Update()
+    // surfaces the disconnect, exactly as a poll-thread read error does.
+    REQUIRE(conn.WaitWritesIdle(2.0));
+    CHECK(conn.HasWriteError());
+
+    sError.clear();
+    conn.Update(sError);
     CHECK_FALSE(sError.empty());
-    CHECK(sResp.empty());  // callback invoked with empty string on error
+
+    // The manager responds to that error by closing the device, which cancels the
+    // in-flight command with an empty response.
+    conn.Close();
+    CHECK(sResp.empty());
 }
 
 // =========================================================================
@@ -770,4 +792,81 @@ TEST_CASE("Lights commands are tagged for backlog bounding; sensor/config are no
     conn2.SendCommand("y1\n");
     conn2.SendCommandPriority("y1\n");
     CHECK_FALSE(conn2.HasUnsentLights());
+}
+
+// =========================================================================
+// Writer thread: writes happen off the caller's thread
+// =========================================================================
+
+// A write handle that blocks until released, so the test can observe that Update()
+// returned while a write was still on the wire.
+namespace {
+class BlockingWriteDevice : public IHIDDevice
+{
+public:
+    int Read(uint8_t *, size_t) override { return 0; }
+    int ReadTimeout(uint8_t *, size_t, int) override { return 0; }
+    int Write(const uint8_t *, size_t len) override
+    {
+        m_bInWrite.store(true);
+        while(!m_bRelease.load())
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        return static_cast<int>(len);
+    }
+    void Close() override {}
+
+    std::atomic<bool> m_bInWrite{false};
+    std::atomic<bool> m_bRelease{false};
+};
+} // anonymous namespace
+
+TEST_CASE("Update does not block on the wire") {
+    auto pBlocking = new BlockingWriteDevice();
+    auto pRead = new FakeHIDDevice();
+
+    SMXDeviceConnection conn;
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pRead)),
+                          unique_ptr<IHIDDevice>(pBlocking), nullptr, 0);
+
+    // Open() queues the device-info request. Update() hands it to the writer, which
+    // parks inside Write(); Update() itself must return regardless.
+    string sError;
+    conn.Update(sError);
+    CHECK(sError.empty());
+
+    // The writer really is stuck mid-write, so the handoff was genuinely asynchronous.
+    bool bReachedWrite = false;
+    for(int i = 0; i < 5000 && !bReachedWrite; ++i)
+    {
+        bReachedWrite = pBlocking->m_bInWrite.load();
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    CHECK(bReachedWrite);
+    CHECK_FALSE(conn.WaitWritesIdle(0.01));  // still in flight
+
+    pBlocking->m_bRelease.store(true);
+    CHECK(conn.WaitWritesIdle(2.0));
+}
+
+TEST_CASE("A command is not marked sent until its packets are on the wire") {
+    auto pBlocking = new BlockingWriteDevice();
+    auto pRead = new FakeHIDDevice();
+
+    SMXDeviceConnection conn;
+    auto poll = conn.Open("/fake/path", unique_ptr<IHIDDevice>(new FakeHIDView(pRead)),
+                          unique_ptr<IHIDDevice>(pBlocking), nullptr, 0);
+
+    string sError;
+    conn.Update(sError);            // hands the device-info request to the writer
+
+    // While the write is parked, repeated Update()s must not promote the command to
+    // sent: its response timeout only starts once the packets reach the wire.
+    conn.Update(sError);
+    CHECK(sError.empty());
+    CHECK_FALSE(conn.WaitWritesIdle(0.01));
+
+    pBlocking->m_bRelease.store(true);
+    REQUIRE(conn.WaitWritesIdle(2.0));
+    conn.Update(sError);            // now promotes to sent
+    CHECK(sError.empty());
 }
