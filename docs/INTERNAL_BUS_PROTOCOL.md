@@ -132,15 +132,32 @@ Confirmed from logic captures with smx-bus-probe (all commands verified with BRE
 | `'B3P'` | 0x42 0x33 0x50 | `0x42 0x33 0x50 0x00[BREAK]` (4B) | `SMX_SetTestMode(Tare)` | Sensor test tare |
 | `'C'` | 0x43 | `0x43 0x00[BREAK]` (2B) | `SMX_ForceRecalibration` | Force recalibration; MCU follows with `'w'` config write |
 | `'w'` + config | 0x77 | `0x77 0xFA 0xVV` + 250B SMXConfig + `0x00[BREAK]` (254B) | `SMX_SetConfig` / periodic MCU | Config write; see format below. Byte[2] varies by source. |
-| `'G'` poll | 0x47 | 65B structured format + `0x00[BREAK]` | `SMX_ReenableAutoLights` / boot | Panel readiness poll; see boot section |
-| `'R'` | 0x52 | `0x52 ...` | — | Panel reset (boot only; not in SDK) |
-| `'U'` | 0x55 | `0x55 0x00[BREAK]` (2B) | — (pad firmware only) | 1Hz heartbeat from SMX pad firmware; not SDK-triggered |
+| `'G'` sync | 0x47 | 64B structured format + `0x00[BREAK]` | MCU, whenever nothing is driving lighting | Animation frame-sync broadcast; see below |
+| `'R'` | 0x52 | `0x52 0x00[BREAK]` (2B) | — (not in SDK) | Effect unverified, see below. Seen at boot, but not boot-only. |
+| `'U'` | 0x55 | `0x55 0x00[BREAK]` (2B) | — (not in SDK) | Purpose unknown; see below. |
 
 **`'B?P'` sensor test format confirmed:** The middle byte exactly mirrors the USB sensor test mode character — `'0'` uncalibrated, `'1'` calibrated, `'2'` noise, `'3'` tare. Captured and verified across all four test modes.
 
 **`'C'` recalibration command:** The command is `'C'` (0x43). The USB-level command is `"C\n"` (from `SMXDevice::ForceRecalibration()`). After `'C'`, the MCU automatically sends a `'w'` config write.
 
-**`'U'` command (0x55) resolved:** A **1-second firmware heartbeat** emitted by the SMX pad firmware itself, not triggered by any SDK API call. It appears at regular 1-second intervals during normal pad operation when the pad's own firmware is in charge (observed immediately after USB is swapped from the Mac SDK to the pad). Format: `0x55 0x00[BREAK]` (2B). It was absent from bus-probe captures because our SDK does not send or respond to it — the pad firmware sends it autonomously on the internal bus regardless of what is connected over USB.
+**`'U'` command (0x55): purpose unknown.** Format: `0x55 0x00[BREAK]` (2B).
+
+An earlier version of this document described it as a 1-second heartbeat emitted
+autonomously by the pad firmware. **That characterisation is withdrawn** — later captures
+do not support it. What `'U'` is for has not been determined.
+
+**`'R'` command (0x52): effect unverified.** Format: `0x52 0x00[BREAK]` (2B).
+
+This was previously labelled "panel reset". That label is an **inference from position** — `'R'` is sent once at the start of the boot sequence, before the config write and the `'G'` broadcasts — and it has never been directly verified. It is a reasonable reading, but it is not an observation.
+
+Two things have since been established:
+
+- **It is not boot-only.** It also appears during normal operation.
+- **It produced no observable effect across five separate occurrences.** In every case the animation frame counter continued incrementing on schedule, with no restart, and `'G'` cadence held at 32.7-32.9 ms against a 32.8 ms norm. In the three-event capture the panel signal lines showed **zero** transitions throughout, on lines that are known to respond to a sensor-test read, so they were being monitored correctly.
+
+If `'R'` reset the panels, the most visible consequence would be the animation restarting from frame 0, and it does not. Either the reset is a no-op once the pad is already up, or the label is wrong.
+
+One correlation worth not over-reading: a `'w'` config write follows each `'R'` by about a second. That is the MCU's own ~2-second autonomous config refresh, not a consequence of `'R'` — the offsets vary (1.12 s, 1.08 s, 1.23 s) and the writes continue on the same cadence with no `'R'` present.
 
 ### Config Write (`'w'`) Format
 
@@ -220,11 +237,13 @@ The 81-byte null burst is the MCU clocking out 80 bits of panel response data pl
 **Disable:**
 1. `'T0' 0x00[BREAK]` — disables panel test mode (3B)
 
-**Important:** When panel test mode is enabled via `SMX_SetPanelTestMode`, the MCU stops accepting lighting commands and **re-enters its panel readiness polling loop** (`'G'` commands at 30Hz). This continues until `SMX_SetPanelTestMode(Off)` is called, after which the MCU polls for a short time then resumes normal lighting.
+**Important:** When panel test mode is enabled via `SMX_SetPanelTestMode`, the MCU stops accepting lighting commands and **returns to emitting `'G'` frame-sync broadcasts** at 30Hz. This continues until `SMX_SetPanelTestMode(Off)` is called, after which the MCU polls for a short time then resumes normal lighting.
 
 ### Re-enable Auto Lights (`SMX_ReenableAutoLights`)
 
-USB command: `"S 1\n"`. Effect on bus: MCU re-enters the `'G'` panel readiness polling loop at 30Hz, verifying all panels before switching back to the MCU's stored GIF auto-lighting mode. Roughly 10 `'G'` polls are sent before lighting resumes.
+USB command: `"S 1\n"`. Effect on bus: the MCU stops accepting host lighting and returns to emitting `'G'` frame-sync broadcasts at 30Hz, at which point the panels resume playing their stored animation.
+
+The switch is essentially immediate. Measured from the last host lighting frame to the first `'G'`: **9 ms with `"S 1\n"`, against 928 ms if nothing is sent.** That ~920 ms figure is the firmware's own timeout, which restores the stored animation on its own once host lighting stops. `"S 1\n"` simply skips the wait.
 
 ## Boot Sequence
 
@@ -234,41 +253,98 @@ USB command: `"S 1\n"`. Effect on bus: MCU re-enters the `'G'` panel readiness p
 |---------|-----|---------|
 | `'R'` | 0x52 | Panel reset — sent once at start of boot |
 | `'w'` + config | 0x77 | Config write — sent immediately after reset |
-| `'G'` poll | 0x47 | Panel readiness poll — sent at 30Hz until panels respond |
+| `'G'` sync | 0x47 | Frame-sync broadcast — sent at 30Hz once panels are up |
 
 **Boot sequence:**
 ```
 t=0       Power on
 t=2.4s    'R'              <- Reset all panels
 t=2.4s    'w' + config     <- Write configuration to panels
-t=2.4s    'G' poll         <- Begin polling for panel readiness (30Hz)
-          ...              <- Repeat 'G' until all panels respond
+t=2.4s    'G' sync         <- Begin frame-sync broadcasts (30Hz)
+          ...              <- Continue until lighting takes over
 t=???     '4','2','3'      <- Switch to lighting loop (normal operation)
 ```
 
-### `'G'` Poll Format (Boot / Re-init)
+### `'G'` Format: Animation Frame Sync
 
-The `'G'` command on the internal bus is **65 bytes**, not just `47 FF` as the USB perspective implies. The MCU sends a structured packet that includes per-panel readiness sub-records:
+`'G'` was previously described here as a panel readiness poll that verifies the panels.
+**That was wrong.** Nothing ever replies to `'G'` — across 376 consecutive `'G'` frames the
+panel signal lines showed no activity at all — and a protocol that verifies nothing cannot
+be a readiness check.
+
+`'G'` is an **animation frame-sync broadcast**. It is 64 bytes plus the BREAK, and tiles
+exactly as a command byte followed by **9 records of 7 bytes, one per panel**:
 
 ```
-Bytes [0-3]:   47 00 00 00              = 'G' command + 3 prefix bytes
-Bytes [4-10]:  FF FF CE 00 00 00 00     = header field (CE = pad-type/status byte)
-Bytes [11-17]: SEQ FF 00 01 00 00 00    = panel entry 1
-Bytes [18-24]: FF FF 02 6B 00 00 00     = separator (constant: 0x6B may be firmware version)
-Bytes [25-31]: SEQ FF 00 01 00 00 00    = panel entry 2
-Bytes [32-38]: SEQ FF 00 01 00 00 00    = panel entry 3
-Bytes [39-45]: SEQ FF 00 01 00 00 00    = panel entry 4
-Bytes [46-52]: FF FF VAR VAR 00 00 00   = separator (varying: status/sensor data?)
-Bytes [53-59]: SEQ FF 00 01 00 00 00    = panel entry 5
-Bytes [60-63]: FF FF VAR VAR            = trailer (varying)
-Byte  [64]:    00 [BREAK]               = command terminator
+47                          'G'
+00 00 00 FF FF 0A A6        panel 0  UpLeft      FF FF = panel not present
+00 00 00 0B FF 00 01        panel 1  Up
+00 00 00 FF FF 01 21        panel 2  UpRight
+00 00 00 0B FF 00 01        panel 3  Left
+00 00 00 0B FF 00 01        panel 4  Center
+00 00 00 0B FF 00 01        panel 5  Right
+00 00 00 FF FF 22 F9        panel 6  DownLeft
+00 00 00 0B FF 00 01        panel 7  Down
+00 00 00 FF FF 10 00        panel 8  DownRight
+00 [BREAK]
 ```
 
-- **SEQ** (5 positions: bytes 11, 25, 32, 39, 53): A counter shared across all 5 panel entries. Cycles as 0x00 x ~27 polls, then 0x01 x 4, 0x02 x 4, 0x03 x 4, 0x04 x 4, 0x05 x 4, repeating. The 0x00 hold duration (~27 polls x 33ms ~= 891ms) matches `autoLightsTimeout = 7 x 128ms = 896ms`.
-- **5 panel entries**: Matches `autoLightPanelMask = 0x00BA` (5 active panels). The MCU only polls enabled panels.
-- **byte[6] = 0xCE in boot-idle** but **0x0A in panel-test context**. This byte appears to reflect MCU operating mode.
+63 payload bytes = 9 x 7 exactly. The five populated panels share an identical record; the
+four unpopulated corners are flagged `FF FF`. Byte 3 of each populated record is a
+**counter**.
 
-After calling `SMX_ReenableAutoLights()`, the `'G'` packet header changes (byte[6] varies), confirming different MCU states produce structurally similar but not identical `'G'` packets.
+**The counter is the animation frame index.** Uploading an 8-frame animation changed its
+cycle from 0..23 to **0..7**, tracking the frame count exactly:
+
+| | Counter range | Distinct values |
+|---|---|---|
+| previous animation | 0..23 | 24 |
+| after uploading 8 frames | 0..7 | 8 |
+
+Supporting observations, all from the same captures:
+
+- **`'G'` and lighting commands are perfectly mutually exclusive.** Across three
+  host-lighting windows, `'G'` frames inside them: 0, 0, 0. `'G'` runs exactly when the
+  panels are animating themselves and stops the moment anything drives lighting.
+- **The counter pauses rather than free-running.** Across each ~2 s lighting gap it moved
+  by 0 or 1, where a free-running clock would have advanced ~20.
+
+### Frame Timing: Quantised to the `'G'` Tick
+
+`'G'` is emitted at a fixed **30.47 Hz (32.82 ms per tick)**, and a frame always lasts a
+whole number of ticks. The firmware rounds each authored frame delay **up**:
+
+```
+ticks = ceil(delay_ms / 32.82)
+```
+
+Measured with two uploads, each ruling out the alternatives:
+
+| Animation asks for | Ticks | Actual frame period | `ceil` | `round` | `floor` |
+|---|---|---|---|---|---|
+| 100 ms | 4 | 132.1 ms | **4** | 3 | 3 |
+| 70 ms | 3 | 99.3 ms | **3** | 2 | 2 |
+
+So a panel animation **never plays faster than authored, and usually plays slower**, by up
+to a full tick. Effective playback rates are limited to **30.47 / k** fps: 30.5, 15.2,
+10.2, 7.6, 6.1, 5.1 and so on. Anything authored between those lands on the slower one.
+
+### Auto-Lighting Is Played By The Panels
+
+Across 35.8 s of capture spanning three host-lighting runs, **every one of the 519 lighting
+commands on the bus carried an all-zero payload** — all of them the host's own black
+frames. No animation content ever crossed the bus, yet the pad visibly animates whenever
+the host stops driving it.
+
+The stored animation is therefore **played by the panels themselves**, not streamed by the
+MCU. That matches the upload path (`SMX_LightsUpload_*`, bus command `'m'`): animation data
+is written into panel storage once, and panels play it locally.
+
+This explains several things at once. `'G'` needs no reply because it only has to keep the
+panels' playback in step. `SMX_ReenableAutoLights` needs no bus command because it only has
+to make the MCU *stop* sending lighting. And the firmware's own ~920 ms timeout achieves
+the same thing by simply giving up on absent host lighting. The `autoLightsTimeout` config
+field (7 x 128 ms = 896 ms) is consistent with the measured 915-928 ms.
 
 ### Mac-Idle Capture (No Software Running)
 
@@ -404,15 +480,21 @@ Sensor test:  MCU sends 'B?P'[BREAK] then 81 x 0x00 (clock)
 
 8. **Platform strip lights are NOT on the panel bus.** `SMX_SetPlatformLights()` triggers USB command `'L'`, but the MCU drives the platform strips directly. No novel commands appear on the data bus during platform strip updates.
 
-9. **Panel test mode causes the MCU to re-enter `'G'` polling.** When `'T1'` is sent, the MCU stops the lighting loop and begins `'G'` readiness polls at 30Hz until `'T0'` is received, then polls briefly before resuming lighting.
+9. **Panel test mode causes the MCU to return to `'G'` broadcasts.** When `'T1'` is sent, the MCU stops the lighting loop and emits `'G'` at 30Hz until `'T0'` is received, then continues briefly before resuming lighting.
 
-10. **`'G'` polls have 5 per-panel entries**, matching `autoLightPanelMask` (5 active panels on this pad). The MCU only polls active panels.
+10. **`'G'` is an animation frame-sync broadcast, not a readiness poll.** It carries 9 records of 7 bytes, one per panel, with unpopulated corners flagged `FF FF`. The per-panel counter is the **animation frame index**: uploading an 8-frame animation changed its cycle from 0..23 to 0..7. Nothing ever replies to `'G'`, and it runs only while the panels are animating themselves.
 
-11. **The MCU writes config autonomously every ~2 seconds** regardless of host software. Even with no SDK connected, the MCU continuously sends `'G'` polls and periodic `'w'` config writes.
+11. **The MCU writes config autonomously every ~2 seconds** regardless of host software. Even with no SDK connected, the MCU continuously sends `'G'` broadcasts and periodic `'w'` config writes.
+
+11b. **Frame timing is quantised to the `'G'` tick, rounding up.** `'G'` runs at a fixed 30.47Hz (32.82ms), and a frame lasts `ceil(delay_ms / 32.82)` ticks. A 100ms authored delay plays at 132.1ms; 70ms plays at 99.3ms. Animations never play faster than authored, only slower, and effective rates are limited to 30.47/k fps.
+
+11c. **Auto-lighting is played by the panels, not streamed by the MCU.** Across 35.8s of capture every one of 519 bus lighting commands carried an all-zero payload (the host's own black frames); no animation content ever crosses the bus, yet the pad animates. Animation data is written into panel storage by the upload path and played locally.
 
 12. **Config fully decoded** (hex-mode CSV export required; ASCII mode corrupts non-printable bytes by substituting `'.'`). `autoLightsTimeout = 7 x 128ms = 896ms`. Center panel has higher load-cell thresholds (100/120) vs. other panels (70/80).
 
-13. **`'U'` (0x55) is a 1Hz pad firmware heartbeat**, not an SDK command. It appears at exactly 1-second intervals on the bus during normal operation when the pad's own firmware is in control (visible immediately after USB is swapped from the Mac SDK connection to the pad itself). Our SDK does not send it and the official stepmaniax-sdk-mp does not handle it. Format: `0x55 0x00[BREAK]` (2B).
+13. **`'U'` (0x55): purpose unknown.** Previously recorded here as an autonomous 1Hz pad firmware heartbeat; that characterisation is withdrawn as unsupported. Format: `0x55 0x00[BREAK]` (2B).
+
+13b. **`'R'` (0x52) "panel reset" is an unverified label.** It comes from `'R'` appearing once at the start of boot, not from any observed reset. It is not boot-only, and across five occurrences the animation frame counter kept incrementing with no restart, `'G'` cadence held at 32.7-32.9ms, and the panel signal lines showed no transitions. Either the reset is a no-op once the pad is up, or the label is wrong.
 
 14. **`'w'` byte[2] varies by software source.** The third byte of the config write is `0x52` from the Mac SDK and `0x12` / `0x1E` / `0x6E` from the official SMX game. It is not a checksum or counter; purpose unknown.
 
