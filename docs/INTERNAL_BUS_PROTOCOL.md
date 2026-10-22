@@ -131,7 +131,7 @@ Confirmed from logic captures with smx-bus-probe (all commands verified with BRE
 | `'B2P'` | 0x42 0x32 0x50 | `0x42 0x32 0x50 0x00[BREAK]` (4B) | `SMX_SetTestMode(Noise)` | Sensor test noise |
 | `'B3P'` | 0x42 0x33 0x50 | `0x42 0x33 0x50 0x00[BREAK]` (4B) | `SMX_SetTestMode(Tare)` | Sensor test tare |
 | `'C'` | 0x43 | `0x43 0x00[BREAK]` (2B) | `SMX_ForceRecalibration` | Force recalibration; MCU follows with `'w'` config write |
-| `'w'` + config | 0x77 | `0x77 0xFA 0xVV` + 250B SMXConfig + `0x00[BREAK]` (254B) | `SMX_SetConfig` / periodic MCU | Config write; see format below. Byte[2] varies by source. |
+| `'w'` + config | 0x77 | `0x77 0xFA 0xVV` + 250B SMXConfig + `0x00[BREAK]` (254B) | `SMX_SetConfig` / MCU refresh every 2 s | Config write; see format below. Byte[2] is a checksum. |
 | `'G'` sync | 0x47 | 64B structured format + `0x00[BREAK]` | MCU, whenever nothing is driving lighting | Animation frame-sync broadcast; see below |
 | `'R'` | 0x52 | `0x52 0x00[BREAK]` (2B) | — (not in SDK) | Effect unverified, see below. Seen at boot, but not boot-only. |
 | `'U'` | 0x55 | `0x55 0x00[BREAK]` (2B) | — (not in SDK) | Purpose unknown; see below. |
@@ -169,16 +169,22 @@ Bus format:   'w' + 0xFA   + VV + SMXConfig(250B) + 0x00[BREAK]
               (1B)  (1B)    (1B)  (250B)             (1B) = 254B total
 ```
 
-The third byte (`VV`) **varies by software source**:
+The third byte (`VV`) **is a checksum over the 250 config bytes** as they go out on the bus:
+
+```
+VV = (sum of the 250 SMXConfig bytes + 0x0A) & 0xFF
+```
+
+It is computed by the MCU and is not part of the USB command. An earlier version of this document said it was *not* a checksum and varied by software source. It only appeared to vary by source because different software writes different configs. Every value observed fits the formula:
 
 | Source | Observed byte[2] values |
 |--------|------------------------|
 | Mac SDK (stepmaniax-sdk-mp / rustmaniax-sdk) | `0x52` |
 | Official SMX game software | `0x12`, `0x1E`, `0x6E` |
 
-It is not a simple incrementing counter and is not a checksum over the config payload. It may be a software-version tag, a session token, or a firmware-internal routing byte. Its purpose is unknown.
+**The MCU re-sends the stored config every 2.00 s on its own.** With the SDK connected and idle (the SDK sends `W` only when the config changes) the bus shows a `'w'` every 2.00 s. A `'w'` caused by a host `W` goes out within a few ms of it. *Probable reason, not verified:* the panels keep their config in RAM, so a panel that resets gets it back within 2 s.
 
-**Decoded config from captures (hex mode, all values confirmed):**
+**Decoded config, from a capture with the Mac SDK connected** (`VV = 0x52`: the bytes sum to `0x48`, + `0x0A`). An earlier version labelled this simply "from captures". Other software, the official game included, writes different thresholds.
 
 ```
 masterVersion:              0x05 = 5
@@ -496,7 +502,7 @@ Sensor test:  MCU sends 'B?P'[BREAK] then 81 x 0x00 (clock)
 
 13b. **`'R'` (0x52) "panel reset" is an unverified label.** It comes from `'R'` appearing once at the start of boot, not from any observed reset. It is not boot-only, and across five occurrences the animation frame counter kept incrementing with no restart, `'G'` cadence held at 32.7-32.9ms, and the panel signal lines showed no transitions. Either the reset is a no-op once the pad is up, or the label is wrong.
 
-14. **`'w'` byte[2] varies by software source.** The third byte of the config write is `0x52` from the Mac SDK and `0x12` / `0x1E` / `0x6E` from the official SMX game. It is not a checksum or counter; purpose unknown.
+14. **`'w'` byte[2] is a checksum:** `(sum of the 250 config bytes + 0x0A) & 0xFF`. It looked source-dependent (`0x52` from the Mac SDK, `0x12` / `0x1E` / `0x6E` from the official SMX game) only because those programs write different configs. An earlier version of this finding said it was not a checksum; that was wrong.
 
 15. **The data bus is physically daisy-chained through the panels in cable order.** Confirmed from physical inspection. Using panel numbering UL=0, U=1, UR=2, L=3, C=4, R=5, DL=6, D=7, DR=8, the chain runs: MCU → 0(UL) → 3(L) → 6(DL) → 7(D) → 4(C) → 1(U) → 2(UR) → 5(R) → 8(DR). This is a serpentine route: left column top-to-bottom, then center column bottom-to-top, then right column top-to-bottom -- consistent with minimizing cable runs across the pad. Whether panels consume/modify bytes in transit or treat the bus as a pure broadcast remains unconfirmed (see Open Questions).
 
@@ -505,7 +511,5 @@ Sensor test:  MCU sends 'B?P'[BREAK] then 81 x 0x00 (clock)
 - **`'G'` poll exact field semantics.** The SEQ counter (5 synchronized bytes cycling 0-5), separator constants (`0x6B`, `0xCE`), and VAR bytes in separators are structurally documented but not semantically decoded. Firmware source would clarify. The 5 panel-entry sub-records are strongly correlated with `autoLightPanelMask`'s 5 enabled panels.
 
 - **`'l'` command payload.** Observed as `0x6C 0x00[BREAK]` (2 bytes: command + 1 null byte). Is the trailing 0x00 a required operand or coincidental? The original SDK sends `"l" + zeros + "\n"` over USB before panel test mode; what arrives on the bus is just `0x6C 0x00[BREAK]`.
-
-- **`'w'` third byte.** Varies by software source (`0x52` Mac SDK, `0x12`/`0x1E`/`0x6E` official SMX game). Not a checksum or simple counter. Purpose unknown.
 
 - **Broadcast vs. consume-and-forward on the daisy chain.** The daisy-chain topology is now confirmed (see Finding 15). The remaining question is whether each panel passes the data line signal through unmodified (pure broadcast, all panels see identical bytes) or consumes/modifies bytes as the command propagates. To resolve this, tap the data line at multiple points in the chain simultaneously and compare the byte streams. If they are identical, it is a broadcast bus; if bytes are stripped or modified at each panel, it is a consume-and-forward protocol. The `'G'` poll's per-panel sub-records are consistent with either model.
